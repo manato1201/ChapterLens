@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
 
     d = sub.add_parser("detect", help="字幕から区間データ(JSON)を作る")
     d.add_argument("captions", help="字幕ファイル(.vtt / .srt / .json3)")
-    d.add_argument("--detector", default="topic-shift@1", choices=available())
+    d.add_argument("--detector", default="topic-shift@2", choices=available())
     d.add_argument("--target-count", type=int, help="境界の数を指定(省略すると自動)")
     d.add_argument("--duration", type=float, help="動画の長さ(秒)。省略すると字幕の終わり")
     d.add_argument("--out", help="書き出し先(省略すると標準出力)")
@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "eval" and not args.detector:
-        args.detector = ["topic-shift@1"]
+        args.detector = ["topic-shift@1", "topic-shift@2"]
     return args.func(args)
 
 

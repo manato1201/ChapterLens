@@ -61,3 +61,27 @@ def test_degenerate_inputs():
     cues, _, _ = make_video([60], lang="en")
     assert det.detect(cues, 15.0).boundaries == []  # 短すぎる
     assert det.detect(cues, 0.0).boundaries == []
+
+
+def test_v2_detector_is_registered_and_finds_boundaries():
+    assert "topic-shift@2" in available()
+    cues, ref, duration = make_video(LENGTHS, lang="en", seed=6)
+    det = get_detector("topic-shift@2")
+    assert det.name == "topic-shift@2"
+    out = det.detect(cues, duration, target_count=len(ref))
+    assert score_boundaries(out.boundaries, ref, 10.0).f1 >= 0.8, (out.boundaries, ref)
+    assert out.boundaries == sorted(out.boundaries)
+    assert all(b - a >= 60.0 for a, b in zip(out.boundaries, out.boundaries[1:]))  # v2 の最小間隔
+
+
+def test_refine_moves_a_coarse_boundary_to_the_real_topic_change():
+    from chapterlens.detectors.topic_shift import PreparedCues, refine_boundaries
+
+    cues, ref, _ = make_video([200, 200], lang="en", seed=7)  # 話題の変わり目は 200 秒
+    prepared = PreparedCues(cues)
+    # 粗い境界が 20 秒ずれていても、半径内なら本当の変わり目に戻る
+    assert refine_boundaries([180.0], prepared, 30.0, 45.0, 30.0) == [200.0]
+    # 半径の外には動かない
+    assert refine_boundaries([140.0], prepared, 10.0, 45.0, 30.0)[0] != 200.0
+    # 近づきすぎた境界は、最小間隔で 1 つになる
+    assert len(refine_boundaries([196.0, 204.0], prepared, 10.0, 45.0, 30.0)) == 1

@@ -73,7 +73,7 @@ def test_evaluate_beats_baselines_on_synthetic_data(dataset):
     videos, _ = evaluation.load_dataset(dataset)
     result = evaluation.evaluate(videos, ["topic-shift@1"])
     assert result["videos"] == 2
-    assert set(result["summary"]) >= {"fixed-300", "uniform-k", "topic-shift@1", "topic-shift@1+k"}
+    assert set(result["summary"]) >= {"fixed-300", "uniform-k", "topic-shift@1", "topic-shift@1+k", "topic-shift@1+prior"}
     check = result["verdict"]["checks"][0]
     assert check["matched_count"]["passes"] and check["default"]["passes"]
     md = evaluation.render_markdown(result, ["x: 理由"])

@@ -11,7 +11,8 @@
     fixed-300       300 秒ごと(字幕を見ない)
     uniform-k       正解と同じ区間数で等間隔
     <検出器>        検出器の既定の感度
-    <検出器>+k      正解の区間数に合わせた感度(粒度を揃えて比べる。設計書 §7)
+    <検出器>+k      正解の区間数に合わせた感度(粒度を揃えて比べる。設計書 §7。製品では使えない上限の目安)
+    <検出器>+prior  区間数を「動画の長さ ÷ 220 秒」で見積もる(製品で使える「標準の粒度」)
 """
 
 from __future__ import annotations
@@ -88,7 +89,12 @@ def load_dataset(root: Path) -> tuple[list[dict], list[str]]:
     return videos, skipped
 
 
-def _predictions(video: dict, detector_names: list[str], fixed_every_s: float) -> dict[str, list[float]]:
+PRIOR_SEGMENT_S = 220.0  # 1 区間の長さの目安(調整用 10 本の中央値)。「標準」の粒度。区間数 = 動画の長さ ÷ これ - 1
+
+
+def _predictions(
+    video: dict, detector_names: list[str], fixed_every_s: float, prior_segment_s: float = PRIOR_SEGMENT_S
+) -> dict[str, list[float]]:
     duration, ref, cues = video["duration_s"], video["ref"], video["cues"]
     preds: dict[str, list[float]] = {
         f"fixed-{int(fixed_every_s)}": baselines.fixed_interval(duration, fixed_every_s),
@@ -98,6 +104,8 @@ def _predictions(video: dict, detector_names: list[str], fixed_every_s: float) -
         det = get_detector(name)
         preds[name] = det.detect(cues, duration).boundaries
         preds[f"{name}+k"] = det.detect(cues, duration, target_count=len(ref)).boundaries
+        k_prior = max(0, round(duration / prior_segment_s) - 1)
+        preds[f"{name}+prior"] = det.detect(cues, duration, target_count=k_prior).boundaries
     return preds
 
 

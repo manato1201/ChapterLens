@@ -4,6 +4,8 @@
 類似度(TF-IDF のコサイン)を測る。類似度が谷になる所が話題の切り替えの候補。
 谷の深さ(depth score)の大きい順に、間隔(min_gap_s)を空けて選ぶ。
 
+- 「類似度の曲線」(similarity_curve)と「境界の選択」(select_boundaries)に分けてある。
+  埋め込み版の検出器(embed_shift.py)や、調整(tools/tune.py)が、曲線だけ差し替えて選択を共有する
 - target_count を渡すと、深い順にその数だけ選ぶ(「正解の区間数に合わせたモード」。設計書 §7)
 - 渡さないと、深さが「平均 + alpha × 標準偏差」と「絶対の下限 min_depth」の両方を超えるものを選ぶ
 """
@@ -30,6 +32,9 @@ class TopicShiftParams:
     # 自動のときの絶対の下限。相対のしきい値だけだと、話題が 1 つの動画でも「上位 30%」が境界になってしまう。
     # **仮の値**: 合成データではノイズが 0.4 以下・本物が 1.15 以上。実データの評価(CH0)で決め直す
     min_depth: float = 0.4
+    # 置き直し(refine): 粗い窓で選んだ境界の近く(±radius)で、字幕 1 つ単位の細かい前後比較で位置を決め直す。0 = しない
+    refine_radius_s: float = 0.0
+    refine_window_s: float = 45.0  # 置き直しのときの、前後の窓の長さ(秒)
 
 
 def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
@@ -67,11 +72,172 @@ def _depth_scores(sims: list[float]) -> list[float]:
     return depths
 
 
-class TopicShiftDetector:
-    name = "topic-shift@1"
+class PreparedCues:
+    """字幕 1 つ単位の語の数え上げと IDF(置き直しで使う)。動画ごとに 1 度作って使い回せる。"""
 
-    def __init__(self, params: TopicShiftParams | None = None) -> None:
-        self.params = params or TopicShiftParams()
+    def __init__(self, cues: list[Cue]) -> None:
+        self.starts = [c.start_s for c in cues]
+        self.counts = [term_counts(c.text) for c in cues]
+        df: Counter = Counter()
+        for c in self.counts:
+            df.update(c.keys())
+        n = max(1, len(cues))
+        self.idf = {t: math.log((n + 1) / (k + 1)) + 1.0 for t, k in df.items()}
+
+    def vector(self, lo: int, hi: int) -> dict[str, float]:
+        total: Counter = Counter()
+        for i in range(lo, hi):
+            total.update(self.counts[i])
+        return {t: (1.0 + math.log(c)) * self.idf[t] for t, c in total.items()}
+
+
+def refine_boundaries(
+    boundaries: list[float], prepared: PreparedCues, radius_s: float, window_s: float, min_gap_s: float
+) -> list[float]:
+    """各境界を、近く(±radius_s)の字幕の開始時刻のうち、前後(window_s)の語の類似度が最も低い所へ動かす。"""
+    starts = prepared.starts
+    out: list[float] = []
+    for b in boundaries:
+        lo_i = bisect.bisect_left(starts, b - radius_s)
+        hi_i = bisect.bisect_right(starts, b + radius_s)
+        best_t, best_sim = b, None
+        for i in range(lo_i, hi_i):
+            t = starts[i]
+            left = prepared.vector(bisect.bisect_left(starts, t - window_s), i)
+            right = prepared.vector(i, bisect.bisect_left(starts, t + window_s))
+            if not left or not right:
+                continue
+            sim = _cosine(left, right)
+            # 同点なら、元の位置に近いほう
+            if best_sim is None or sim < best_sim - 1e-9 or (abs(sim - best_sim) <= 1e-9 and abs(t - b) < abs(best_t - b)):
+                best_t, best_sim = t, sim
+        out.append(best_t)
+    out.sort()
+    kept: list[float] = []
+    for t in out:
+        if not kept or t - kept[-1] >= min_gap_s:
+            kept.append(t)
+    return kept
+
+
+def num_bins(duration_s: float, step_s: float) -> int:
+    return int(math.ceil(duration_s / step_s)) if duration_s > 0 else 0
+
+
+def bin_index(start_s: float, step_s: float, nbins: int) -> int:
+    return min(nbins - 1, max(0, int(start_s // step_s)))
+
+
+def similarity_curve(cues: list[Cue], duration_s: float, step_s: float, window_bins: int) -> list[float]:
+    """語彙(TF-IDF)の類似度の曲線。curve[g - 1] = 境界 g(= g × step_s 秒)の前後の類似度。
+
+    ビンが 3 未満・字幕が無いときは空のリスト。
+    """
+    nbins = num_bins(duration_s, step_s)
+    if nbins < 3 or not cues:
+        return []
+    bins: list[Counter] = [Counter() for _ in range(nbins)]
+    for cue in cues:
+        bins[bin_index(cue.start_s, step_s, nbins)].update(term_counts(cue.text))
+
+    df: Counter = Counter()
+    for b in bins:
+        df.update(b.keys())
+    idf = {t: math.log((nbins + 1) / (n + 1)) + 1.0 for t, n in df.items()}
+
+    def vector(window: list[Counter]) -> dict[str, float]:
+        total: Counter = Counter()
+        for b in window:
+            total.update(b)
+        return {t: (1.0 + math.log(c)) * idf[t] for t, c in total.items()}
+
+    w = window_bins
+    return [_cosine(vector(bins[max(0, g - w) : g]), vector(bins[g : g + w])) for g in range(1, nbins)]
+
+
+def select_boundaries(
+    sims: list[float],
+    cues: list[Cue],
+    duration_s: float,
+    p: TopicShiftParams,
+    *,
+    target_count: int | None,
+    name: str,
+    prepared: PreparedCues | None = None,
+) -> Detection:
+    """類似度の曲線から、境界を選ぶ(谷の深さ → しきい値 or 個数 → 最小間隔 → 置き直し)。"""
+    meta = {"params": asdict(p), "target_count": target_count}
+    if not sims:
+        return Detection([], [], name, meta)
+    nbins = len(sims) + 1
+    depths = _depth_scores(_smooth(sims, p.smooth_bins))
+    max_depth = max(depths) if depths else 0.0
+    if max_depth <= 0:
+        return Detection([], [], name, meta)
+
+    cut_time = lambda g: g * p.step_s  # noqa: E731
+    candidates = [
+        (depths[g - 1], g)
+        for g in range(1, nbins)
+        if p.min_gap_s <= cut_time(g) <= duration_s - p.min_gap_s and depths[g - 1] > 0
+    ]
+    candidates.sort(reverse=True)
+
+    if target_count is None:
+        mean = sum(depths) / len(depths)
+        std = math.sqrt(sum((d - mean) ** 2 for d in depths) / len(depths))
+        threshold = max(mean + p.alpha * std, p.min_depth)
+        candidates = [c for c in candidates if c[0] > threshold]
+        limit = None
+    else:
+        limit = max(0, target_count)
+
+    chosen: list[tuple[float, float]] = []  # (時刻, depth)
+    starts = [c.start_s for c in cues]
+    for depth, g in candidates:
+        if limit is not None and len(chosen) >= limit:
+            break
+        t = snap(cut_time(g), starts, p.step_s)
+        if all(abs(t - other) >= p.min_gap_s for other, _ in chosen):
+            chosen.append((t, depth))
+
+    chosen.sort()
+    times = [t for t, _ in chosen]
+    scores = [round(min(1.0, d / max_depth), 3) for _, d in chosen]
+    if p.refine_radius_s > 0 and times:
+        moved = refine_boundaries(times, prepared or PreparedCues(cues), p.refine_radius_s, p.refine_window_s, p.min_gap_s)
+        if len(moved) == len(times):
+            times = moved
+        else:  # 最小間隔で落ちたものがある: 信頼度は先頭から揃える(順序は保たれる)
+            times, scores = moved, scores[: len(moved)]
+    return Detection([round(t, 3) for t in times], scores, name, meta)
+
+
+def snap(t: float, starts: list[float], step_s: float) -> float:
+    """境界を、近くの字幕の開始時刻に寄せる(話題の変わり目は、たいてい発話の頭)。"""
+    i = bisect.bisect_left(starts, t)
+    best = None
+    for j in (i - 1, i):
+        if 0 <= j < len(starts) and abs(starts[j] - t) <= step_s / 2:
+            if best is None or abs(starts[j] - t) < abs(best - t):
+                best = starts[j]
+    return best if best is not None else t
+
+
+# v1: 合成データで決めた最初の既定(比較のために残す)
+V1_PARAMS = TopicShiftParams()
+# v2: 実データ 20 本のうち調整用 10 本で選んだ既定(2026-11-12。確認用 10 本で効果を見た。tools/tune.py・tune_refine.py)。
+# 置き直しは、調整用の上位が radius 10〜20s・窓 45s に集まっていた(4 つの設定すべて)ので、その中心を採った
+V2_PARAMS = TopicShiftParams(
+    step_s=10.0, window_bins=8, smooth_bins=3, min_gap_s=60.0, alpha=0.0, min_depth=0.1,
+    refine_radius_s=10.0, refine_window_s=45.0,
+)
+
+
+class TopicShiftDetector:
+    def __init__(self, params: TopicShiftParams | None = None, name: str = "topic-shift@1") -> None:
+        self.params = params or V1_PARAMS
+        self.name = name
 
     def detect(
         self,
@@ -81,81 +247,9 @@ class TopicShiftDetector:
         target_count: int | None = None,
     ) -> Detection:
         p = self.params
-        meta = {"params": asdict(p), "target_count": target_count}
-        nbins = int(math.ceil(duration_s / p.step_s)) if duration_s > 0 else 0
-        if nbins < 3 or not cues:
-            return Detection([], [], self.name, meta)
-
-        bins: list[Counter] = [Counter() for _ in range(nbins)]
-        for cue in cues:
-            idx = min(nbins - 1, max(0, int(cue.start_s // p.step_s)))
-            bins[idx].update(term_counts(cue.text))
-
-        df: Counter = Counter()
-        for b in bins:
-            df.update(b.keys())
-        idf = {t: math.log((nbins + 1) / (n + 1)) + 1.0 for t, n in df.items()}
-
-        def vector(window: list[Counter]) -> dict[str, float]:
-            total: Counter = Counter()
-            for b in window:
-                total.update(b)
-            return {t: (1.0 + math.log(c)) * idf[t] for t, c in total.items()}
-
-        w = p.window_bins
-        sims = [
-            _cosine(vector(bins[max(0, g - w) : g]), vector(bins[g : g + w]))
-            for g in range(1, nbins)
-        ]  # sims[g - 1] = 境界 g(= g × step_s 秒)の前後の類似度
-        depths = _depth_scores(_smooth(sims, p.smooth_bins))
-        max_depth = max(depths) if depths else 0.0
-        if max_depth <= 0:
-            return Detection([], [], self.name, meta)
-
-        cut_time = lambda g: g * p.step_s  # noqa: E731
-        candidates = [
-            (depths[g - 1], g)
-            for g in range(1, nbins)
-            if p.min_gap_s <= cut_time(g) <= duration_s - p.min_gap_s and depths[g - 1] > 0
-        ]
-        candidates.sort(reverse=True)
-
-        if target_count is None:
-            mean = sum(depths) / len(depths)
-            std = math.sqrt(sum((d - mean) ** 2 for d in depths) / len(depths))
-            threshold = max(mean + p.alpha * std, p.min_depth)
-            candidates = [c for c in candidates if c[0] > threshold]
-            limit = None
-        else:
-            limit = max(0, target_count)
-
-        chosen: list[tuple[float, float]] = []  # (時刻, depth)
-        starts = [c.start_s for c in cues]
-        for depth, g in candidates:
-            if limit is not None and len(chosen) >= limit:
-                break
-            t = self._snap(cut_time(g), starts, p.step_s)
-            if all(abs(t - other) >= p.min_gap_s for other, _ in chosen):
-                chosen.append((t, depth))
-
-        chosen.sort()
-        return Detection(
-            [round(t, 3) for t, _ in chosen],
-            [round(min(1.0, d / max_depth), 3) for _, d in chosen],
-            self.name,
-            meta,
-        )
-
-    @staticmethod
-    def _snap(t: float, starts: list[float], step_s: float) -> float:
-        """境界を、近くの字幕の開始時刻に寄せる(話題の変わり目は、たいてい発話の頭)。"""
-        i = bisect.bisect_left(starts, t)
-        best = None
-        for j in (i - 1, i):
-            if 0 <= j < len(starts) and abs(starts[j] - t) <= step_s / 2:
-                if best is None or abs(starts[j] - t) < abs(best - t):
-                    best = starts[j]
-        return best if best is not None else t
+        sims = similarity_curve(cues, duration_s, p.step_s, p.window_bins)
+        return select_boundaries(sims, cues, duration_s, p, target_count=target_count, name=self.name)
 
 
-register(TopicShiftDetector.name, TopicShiftDetector)
+register("topic-shift@1", lambda: TopicShiftDetector(V1_PARAMS, "topic-shift@1"))
+register("topic-shift@2", lambda: TopicShiftDetector(V2_PARAMS, "topic-shift@2"))
