@@ -18,6 +18,50 @@ const stamp = (s) =>
   `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const rows = kase.cues.map((c) => ({ t: stamp(c.start), x: c.text }));
 
+
+// 開発用の擬似 chrome(?variant=shim): 保存はメモリ、エンジンの呼び出しは決まった返事。共有・保存の画面を、実ブラウザで確かめる用。
+const SHIM = `<script>
+  (function () {
+    const mem = {};
+    window.__engineLog = [];
+    window.chrome = {
+      storage: { local: {
+        get: async (k) => { const ks = typeof k === "string" ? [k] : k; return Object.fromEntries(ks.filter((x) => x in mem).map((x) => [x, JSON.parse(JSON.stringify(mem[x]))])); },
+        set: async (o) => { for (const [k, v] of Object.entries(o)) mem[k] = JSON.parse(JSON.stringify(v)); },
+        remove: async (k) => { for (const x of [].concat(k)) delete mem[x]; },
+      } },
+      runtime: {
+        onMessage: { addListener() {} },
+        sendMessage: async (m) => {
+          if (m.target !== "background" || m.type !== "engine") return;
+          window.__engineLog.push({ method: m.method, path: m.path, body: m.body });
+          if (m.path === "/v1/me") return { ok: true, status: 200, data: { user: { id: "u_aaaaaaaa", name: "alice", role: "user" }, share_mode: "team" } };
+          if (m.path.startsWith("/v1/shares?video=")) return { ok: true, status: 200, data: { shares: [
+            { from: "bob", mine: false, boundaries: [190, 395, 760, 1210, 1520], titles: null },
+            { from: "carol", mine: false, boundaries: [200, 600, 1300], titles: null } ] } };
+          if (m.path === "/v1/shares" && m.method === "POST") return { ok: true, status: 200, data: { shared: true } };
+          return { ok: false, status: 404, error: "mock" };
+        },
+      },
+    };
+  })();
+</script>`;
+
+// 開発用: 管理ページ(/admin)を擬似 chrome つきで配信する(画面の確認用)
+const ADMIN_SHIM = `<script>
+  (function () {
+    const users = [{ id: "local", name: "local", role: "admin", disabled: false }, { id: "u_1a2b3c4d", name: "alice", role: "user", disabled: false }, { id: "u_5e6f7a8b", name: "bob", role: "user", disabled: true }];
+    window.chrome = { storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } }, runtime: { sendMessage: async (m) => {
+      const p = m.path;
+      if (p === "/v1/me") return { ok: true, status: 200, data: { user: users[0], share_mode: "team" } };
+      if (p === "/v1/admin/users" && m.method === "GET") return { ok: true, status: 200, data: { users } };
+      if (p === "/v1/admin/users" && m.method === "POST") return { ok: true, status: 200, data: { user: { id: "u_99999999", name: m.body.name, role: m.body.role }, token: "TOKEN-SHOWN-ONCE-abcdefghijklmnopqrstuvwxyz0123456789" } };
+      if (p.startsWith("/v1/admin/audit")) return { ok: true, status: 200, data: { events: [{ t: 1700000000, event: "admin.user.create", actor: "cli", target: "u_1a2b3c4d", role: "user" }, { t: 1700000100, route: "/v1/me", status: 200, owner: "local", role: "admin", ms: 2 }] } };
+      return { ok: false, status: 404, error: "mock" };
+    } } };
+  })();
+</script>`;
+
 const page = (
   variant,
 ) => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>mock watch</title>
@@ -49,7 +93,8 @@ const page = (
   // 動画の切り替え(SPA)を模す: 同じ見た目の別 v に pushState して、yt-navigate-finish を出す
   window.mockNavigate = (v) => { history.pushState({}, '', '/watch?v=' + v); document.dispatchEvent(new Event('yt-navigate-finish')); };
 </script>
-<script src="/src/core.js"></script><script src="/src/transcript.js"></script><script src="/src/ui.js"></script><script src="/src/content.js"></script>
+${variant === "shim" ? SHIM : ""}
+<script src="/src/core.js"></script><script src="/src/capture.js"></script><script src="/src/store.js"></script><script src="/src/engine.js"></script><script src="/src/transcript.js"></script><script src="/src/ui.js"></script><script src="/src/content.js"></script>
 </body></html>`;
 
 createServer((req, res) => {
@@ -57,6 +102,10 @@ createServer((req, res) => {
   if (url.pathname === "/watch") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(page(url.searchParams.get("variant")));
+  } else if (url.pathname === "/admin") {
+    const html = readFileSync(join(root, "src", "admin.html"), "utf-8").replace(/<script src="([a-z]+\.js)">/g, '<script src="/src/$1">').replace("<script src=\"/src/capture.js\">", ADMIN_SHIM + "<script src=\"/src/capture.js\">");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
   } else if (/^\/src\/[a-z]+\.js$/.test(url.pathname)) {
     res.writeHead(200, {
       "content-type": "text/javascript; charset=utf-8",

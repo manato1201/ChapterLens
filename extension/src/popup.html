@@ -21,7 +21,7 @@
 </head>
 <body>
   <h1>ChapterLens — 音声から作る</h1>
-  <p class="muted">字幕(文字起こし)が無い動画用。再生中のタブの音を、<b>この PC の中のエンジン</b>(127.0.0.1)で文字にします。音はファイルに保存せず、外部にも送りません。</p>
+  <p class="muted">字幕(文字起こし)が無い動画・ライブ配信用。再生中のタブの音を、<b>この PC の中のエンジン</b>(127.0.0.1)で文字にします。音はファイルに保存せず、外部にも送りません。</p>
   <label for="url">エンジンの URL</label>
   <input id="url" value="http://127.0.0.1:8787" autocomplete="off">
   <label for="token">token(<code>~/.chapterlens/token</code> の中身)</label>
@@ -31,6 +31,7 @@
   <button id="go" class="go" type="button">この動画の音声から作る</button>
   <button id="stop" type="button" hidden>停止</button>
   <div id="msg" role="status" aria-live="polite"></div>
+  <button id="admin" type="button">共有と管理を開く</button>
   <script src="capture.js"></script>
   <script src="popup.js"></script>
 </body>

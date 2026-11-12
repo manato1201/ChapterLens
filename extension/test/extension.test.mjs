@@ -50,15 +50,21 @@ test("manifest: key から作った拡張 ID が、文書の ID と一致する"
   assert.ok(readFileSync(join(root, "README.md"), "utf-8").includes(EXT_ID), "README に拡張 ID がない");
 });
 
-test("manifest: 読み込む JS・HTML がすべて存在し、core が content より先", () => {
+test("manifest: 読み込む JS・HTML がすべて存在し、依存が content より先", () => {
   const js = manifest.content_scripts[0].js;
-  for (const f of [...js, manifest.background.service_worker, manifest.action.default_popup, "src/offscreen.html", "src/offscreen.js", "src/pcm-worklet.js"]) assert.ok(existsSync(join(root, f)), f);
-  assert.ok(js.indexOf("src/core.js") < js.indexOf("src/content.js"));
-  assert.ok(js.indexOf("src/capture.js") < js.indexOf("src/content.js"));
+  for (const f of [...js, manifest.background.service_worker, manifest.action.default_popup, "src/offscreen.html", "src/offscreen.js", "src/pcm-worklet.js", "src/admin.html", "src/admin.js"]) assert.ok(existsSync(join(root, f)), f);
+  for (const dep of ["core", "capture", "store", "engine", "transcript", "ui"]) assert.ok(js.indexOf(`src/${dep}.js`) >= 0 && js.indexOf(`src/${dep}.js`) < js.indexOf("src/content.js"), dep);
   assert.equal(js.at(-1), "src/content.js");
 });
 
-const BAD_ALWAYS = [/XMLHttpRequest/, /sendBeacon/, /WebSocket/, /\beval\s*\(/, /new Function/, /\.innerHTML\s*=/, /insertAdjacentHTML/, /document\.write/, /importScripts/];
+test("HTML が読み込む script は、すべて src/ にある自分のファイル", () => {
+  for (const f of ["popup.html", "admin.html", "offscreen.html"]) {
+    const html = readFileSync(join(root, "src", f), "utf-8");
+    for (const m of html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)) assert.ok(existsSync(join(root, "src", m[1])), `${f}: ${m[1]}`);
+  }
+});
+
+const BAD_ALWAYS = [/XMLHttpRequest/, /sendBeacon/, /WebSocket/, /\beval\s*\(/, /new Function/, /\.innerHTML\s*=/, /insertAdjacentHTML/, /document\.write/];
 
 test("ソース全体: 動的コード実行・HTML 文字列の挿入・WebSocket 等がない", () => {
   for (const f of readdirSync(join(root, "src")).filter((n) => n.endsWith(".js"))) {
@@ -67,21 +73,39 @@ test("ソース全体: 動的コード実行・HTML 文字列の挿入・WebSock
   }
 });
 
-test("通信: fetch は offscreen.js だけ(capture.js は渡された fetch を呼ぶだけ)。content script は何も送らない", () => {
+test("importScripts は、自分のファイル(相対パス)だけ", () => {
+  for (const f of readdirSync(join(root, "src")).filter((n) => n.endsWith(".js"))) {
+    const src = readFileSync(join(root, "src", f), "utf-8");
+    for (const m of src.matchAll(/importScripts\s*\(([^)]*)\)/g)) assert.match(m[1].trim(), /^"[A-Za-z0-9_.-]+\.js"$/, `${f}: importScripts(${m[1]})`);
+  }
+});
+
+test("通信: fetch は offscreen.js(音声)と background.js(エンジンの API 中継)だけ。画面・content script は何も直接送らない", () => {
   for (const f of readdirSync(join(root, "src")).filter((n) => n.endsWith(".js"))) {
     const src = readFileSync(join(root, "src", f), "utf-8");
     const calls = src.match(/(?<![.\w])fetch\s*\(/g) || []; // 単独の fetch( だけ(this.d.fetch( は別)
-    if (f === "offscreen.js") assert.ok(calls.length >= 1);
+    if (f === "offscreen.js" || f === "background.js") assert.ok(calls.length >= 1, f);
     else assert.equal(calls.length, 0, `${f} が fetch を直接呼んでいる`);
   }
   // 送り先の検査(127.0.0.1 だけ)を、送る前に必ず通している
   const off = readFileSync(join(root, "src/offscreen.js"), "utf-8");
   assert.ok(off.includes("validateServerUrl"));
   assert.ok(readFileSync(join(root, "src/capture.js"), "utf-8").includes("this.base = validateServerUrl"));
+  const bg = readFileSync(join(root, "src/background.js"), "utf-8");
+  assert.ok(bg.indexOf("validateServerUrl") > 0 && bg.indexOf("validateServerUrl") < bg.indexOf("await fetch("), "background は fetch の前に送り先を検査する");
+  for (const must of ['redirect: "error"', 'credentials: "omit"', "sender.id !== chrome.runtime.id"]) assert.ok(bg.includes(must), must);
+});
+
+test("エンジンの中継の許可リスト: 音声(/v1/transcribe)・/v1/detect・/v1/corrections は通さない。管理の経路は ID の形まで縛る", () => {
+  const bg = readFileSync(join(root, "src/background.js"), "utf-8");
+  const table = bg.slice(bg.indexOf("const ENGINE_ROUTES"), bg.indexOf("async function hasOffscreen"));
+  for (const bad of ["transcribe", "detect", "corrections"]) assert.ok(!table.includes(bad), bad);
+  assert.equal((table.match(/\["(GET|POST)", \//g) || []).length, 13);
+  assert.ok(table.includes("(local|u_[0-9a-f]{8})"));
 });
 
 test("外部の URL を読み込まない(HTML も)・HTML にインラインのスクリプトがない(CSP)", () => {
-  for (const f of ["popup.html", "offscreen.html"]) {
+  for (const f of ["popup.html", "offscreen.html", "admin.html"]) {
     const html = readFileSync(join(root, "src", f), "utf-8");
     assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>/i.test(html), `${f} にインラインの script`);
     assert.ok(!/(?:src|href)\s*=\s*["']https?:/i.test(html), `${f} が外部を読み込む`);

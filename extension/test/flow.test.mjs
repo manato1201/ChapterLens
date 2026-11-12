@@ -1,39 +1,12 @@
 /*
  * background.js と content.js の「取り込みの流れ」を、偽の chrome / DOM で動かす(Chrome の本物の API は使えないので、
- * メッセージのやりとり・時刻の変換・結果の積み上げ・エラー処理までを確かめる)。
+ * メッセージのやりとり・時刻の変換・結果の積み上げ・エラー処理までを確かめる)。読み込みの仕組みは helpers.mjs。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import vm from "node:vm";
+import { loadBackground, loadContent, chunkCues, tick } from "./helpers.mjs";
 
-const require = createRequire(import.meta.url);
-const here = dirname(fileURLToPath(import.meta.url));
-const src = (f) => readFileSync(join(here, "..", "src", f), "utf-8");
-const tick = () => new Promise((r) => setImmediate(r));
-
-// ================= background.js =================
-function loadBackground({ offscreenReply } = {}) {
-  const st = { offscreen: false, created: [], closed: 0, sent: [], tabMsgs: [], listener: null };
-  const chrome = {
-    runtime: {
-      getContexts: async () => (st.offscreen ? [{}] : []),
-      onMessage: { addListener: (fn) => { st.listener = fn; } },
-      sendMessage: async (m) => { st.sent.push(m); if (m.target === "offscreen") return offscreenReply ? offscreenReply(m) : { ok: true }; },
-    },
-    offscreen: {
-      createDocument: async (o) => { st.offscreen = true; st.created.push(o); },
-      closeDocument: async () => { st.offscreen = false; st.closed++; },
-    },
-    tabs: { sendMessage: async (id, m) => { st.tabMsgs.push([id, m]); } },
-  };
-  vm.runInNewContext(src("background.js"), { chrome, console });
-  return { st, send: (msg) => new Promise((resolve) => { const r = st.listener(msg, {}, resolve); if (r !== true) resolve(undefined); }) };
-}
-
+// ================= background.js(取り込み) =================
 test("background: start は offscreen を作り、音声の取り込みを依頼し、タブへ開始を知らせる", async () => {
   const { st, send } = loadBackground();
   const res = await send({ target: "background", type: "start", streamId: "sid", tabId: 7, serverUrl: "http://127.0.0.1:8787", token: "tok", language: "ja" });
@@ -71,67 +44,8 @@ test("background: 中継・停止・終了。自分宛てでないメッセー�
   assert.equal(await send(null), undefined);
 });
 
-// ================= content.js =================
-const Core = require("../src/core.js");
-const Cap = require("../src/capture.js");
-const Tr = require("../src/transcript.js");
 
-function loadContent({ pathname = "/watch", videoId = "vid1", duration = 600, granularity = "fine" } = {}) {
-  const clock = { t: 1_000_000 };
-  const video = Object.assign(new EventTarget(), { currentTime: 0, duration, paused: false });
-  const ui = { calls: [], status: [], chapters: [], open: 0 };
-  const rec = (name) => (...a) => ui.calls.push([name, ...a]);
-  const fakeUI = {
-    createPanel: () => ({
-      mount: rec("mount"), unmount: rec("unmount"), open: () => { ui.open++; }, close: rec("close"),
-      setStatus: (t, kind) => ui.status.push({ t, kind }), setBusy: rec("busy"), setRunLabel: rec("runLabel"),
-      setGranularity: rec("gran"), setCanCopy: rec("canCopy"), setCurrent: rec("current"),
-      setChapters: (c) => ui.chapters.push(c),
-    }),
-  };
-  const docListeners = {};
-  const document = {
-    querySelector: (sel) => (sel.includes("video") ? video : null), querySelectorAll: () => [],
-    addEventListener: (t, fn) => { docListeners[t] = fn; },
-    documentElement: { hasAttribute: () => false }, body: {}, createElement: () => ({ append() {}, style: {}, remove() {} }),
-  };
-  const loc = { pathname, href: `https://www.youtube.com/watch?v=${videoId}` };
-  const sent = [];
-  let msgListener = null;
-  const chrome = {
-    storage: { local: { get: async () => ({ "chapterlens.granularity": granularity }), set: async () => {} } },
-    runtime: { onMessage: { addListener: (fn) => { msgListener = fn; } }, sendMessage: (m) => { sent.push(m); return Promise.resolve(); } },
-  };
-  const win = { ChapterLensCore: Core, ChapterLensCapture: Cap, ChapterLensTranscript: Tr, ChapterLensUI: fakeUI };
-  const ctx = {
-    window: win, document, location: loc, chrome, URL, performance, console, EventTarget,
-    Date: { now: () => clock.t }, setInterval: () => 1, clearInterval: () => {}, setTimeout, Promise, navigator: {},
-    Math, Number, Set, Array, Object, isFinite, String,
-  };
-  vm.runInNewContext(src("content.js"), ctx);
-  return {
-    clock, video, ui, sent, loc,
-    msg: (m) => msgListener(m),
-    navigate: (id) => { loc.href = `https://www.youtube.com/watch?v=${id}`; docListeners["yt-navigate-finish"](); },
-    play: (sec) => { // 1 秒ずつ進めて timeupdate を出す(1 倍速)
-      for (let i = 0; i < sec; i++) { clock.t += 1000; video.currentTime += 1; video.dispatchEvent(new Event("timeupdate")); }
-    },
-    ready: () => tick(),
-  };
-}
-
-// 前半(0〜120 秒)と後半(120〜240 秒)で語彙の違う、6 秒ごとの字幕
-const TOPIC_A = ["ギター", "弦", "コード", "演奏", "音色", "ピック", "指板", "リズム"];
-const TOPIC_B = ["料理", "野菜", "包丁", "出汁", "味噌", "鍋", "火加減", "調味料"];
-function chunkCues(fromS, toS) {
-  const out = [];
-  for (let t = fromS; t < toS; t += 6) {
-    const words = t < 120 ? TOPIC_A : TOPIC_B;
-    out.push({ start: t - fromS, end: t - fromS + 6, text: Array.from({ length: 5 }, (_, i) => words[(t / 6 + i * 3) % words.length]).join("") + "について話します" });
-  }
-  return out;
-}
-
+// ================= content.js(取り込み) =================
 async function startedPage() {
   const page = loadContent();
   await page.ready();

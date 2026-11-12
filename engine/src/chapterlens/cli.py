@@ -253,6 +253,10 @@ def main(argv: list[str] | None = None) -> int:
     ag.add_argument("-n", type=int, default=50)
     ad.set_defaults(func=_cmd_admin)
 
+    from . import cli_tools
+
+    cli_tools.register(sub)
+
     args = parser.parse_args(argv)
     if args.command == "eval" and not args.detector:
         args.detector = ["topic-shift@1", "topic-shift@2"]

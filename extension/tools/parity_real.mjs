@@ -30,6 +30,17 @@ for (const r of rows) {
     else diffs.push({ id: r.id, key, got: got.boundaries.length, want: want.length, firstDiff: got.boundaries.find((b, i) => b !== want[i]) });
   }
 }
+// ダイジェスト(k6 の境界を入力に)
+let dTotal = 0, dExact = 0;
+for (const r of rows) {
+  if (!r.digest) continue;
+  dTotal++;
+  const got = core.selectDigest(r.cues, r.k6.boundaries, r.duration);
+  const same = got.length === r.digest.length && got.every((s, i) => s.start === r.digest[i].start && s.end === r.digest[i].end && s.chapter === r.digest[i].chapter);
+  if (same) dExact++;
+  else diffs.push({ id: r.id, key: "digest", got: got.length, want: r.digest.length });
+}
+if (dTotal) console.log(`ダイジェスト ${dTotal} 本: 完全一致 ${dExact} / 不一致 ${dTotal - dExact}`);
 console.log(`実データ ${rows.length} 本 × 2 モード = ${total} 通り: 完全一致 ${exact} / 不一致 ${total - exact}`);
 for (const d of diffs.slice(0, 10)) console.log("  不一致:", JSON.stringify(d));
 process.exit(diffs.length === 0 ? 0 : 1);

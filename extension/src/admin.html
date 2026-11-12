@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChapterLens — 共有と管理</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --line: #8886;
+        --accent: #0b57d0;
+        --err: #b3261e;
+        --ok: #1e6b34;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --accent: #8ab4f8;
+          --err: #f2b8b5;
+          --ok: #8bd49c;
+        }
+      }
+      body {
+        margin: 0 auto;
+        padding: 16px;
+        max-width: 720px;
+        font:
+          14px/1.6 system-ui,
+          "Yu Gothic UI",
+          "Hiragino Sans",
+          sans-serif;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 15px;
+        margin: 24px 0 6px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 4px;
+      }
+      .muted {
+        opacity: 0.75;
+        font-size: 12px;
+      }
+      #msg {
+        min-height: 1.6em;
+        margin: 8px 0;
+      }
+      #msg.err {
+        color: var(--err);
+      }
+      #msg.ok {
+        color: var(--ok);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 4px 6px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: middle;
+      }
+      td.actions {
+        white-space: nowrap;
+      }
+      button,
+      select,
+      input {
+        font: inherit;
+        padding: 3px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: transparent;
+        color: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button[disabled] {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button.danger {
+        border-color: var(--err);
+        color: var(--err);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 6px 0;
+      }
+      .secret {
+        margin: 8px 0;
+        padding: 8px;
+        border: 1px dashed var(--accent);
+        border-radius: 8px;
+        word-break: break-all;
+        font-family: ui-monospace, Consolas, monospace;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-all;
+        font-size: 12px;
+        max-height: 260px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>共有と管理</h1>
+    <p class="muted">
+      この画面は、この PC
+      のエンジン(127.0.0.1)にだけつながります。権限(管理者かどうか)はエンジンが確かめます。画面の出し分けは目安です。
+    </p>
+    <div id="msg" role="status" aria-live="polite"></div>
+
+    <section id="me-section">
+      <h2>あなた</h2>
+      <div id="me">読み込み中…</div>
+      <div class="row">
+        <button id="forget" type="button">自分のデータをすべて忘れる</button>
+        <span class="muted"
+          >エンジンにある、あなたの修正・共有・ライブのセッションと、このブラウザに保存した調整を消します(元に戻せません)。</span
+        >
+      </div>
+    </section>
+
+    <section id="admin-section" hidden>
+      <h2>共有の範囲</h2>
+      <div class="row">
+        <label for="mode">共有範囲</label>
+        <select id="mode">
+          <option value="off">off(共有しない)</option>
+          <option value="team">team(全員か、指定した人と)</option>
+          <option value="named">named(指定した人だけと)</option>
+        </select>
+        <button id="save-mode" type="button">変更する</button>
+      </div>
+      <p class="muted">
+        共有できるのは区間の時刻と、利用者が選んだときの題名だけ。字幕・音声・動画は共有されません。
+      </p>
+
+      <h2>利用者</h2>
+      <table aria-label="利用者の一覧">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>名前</th>
+            <th>役割</th>
+            <th>状態</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="users"></tbody>
+      </table>
+      <div class="row">
+        <input
+          id="new-name"
+          placeholder="名前(40 文字まで)"
+          maxlength="40"
+          aria-label="新しい利用者の名前"
+        />
+        <select id="new-role" aria-label="役割">
+          <option value="user">利用者</option>
+          <option value="admin">管理者</option>
+        </select>
+        <button id="add-user" type="button">利用者を追加</button>
+      </div>
+      <div id="secret" class="secret" hidden>
+        <div id="secret-label" class="muted"></div>
+        <div id="secret-token"></div>
+        <div class="row">
+          <button id="copy-token" type="button">コピー</button
+          ><span class="muted"
+            >この token は、いま 1
+            度だけ表示します(エンジンは、ハッシュしか持ちません)。本人にだけ渡してください。</span
+          >
+        </div>
+      </div>
+
+      <h2>監査ログ(新しい順・最新 50 件)</h2>
+      <p class="muted">
+        管理操作・共有・「忘れる」の記録です。token・字幕・題名・動画 ID
+        は残りません。
+      </p>
+      <button id="reload-audit" type="button">更新</button>
+      <pre id="audit" aria-label="監査ログ"></pre>
+    </section>
+
+    <script src="capture.js"></script>
+    <script src="store.js"></script>
+    <script src="engine.js"></script>
+    <script src="admin.js"></script>
+  </body>
+</html>

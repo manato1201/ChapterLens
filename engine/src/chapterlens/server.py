@@ -16,7 +16,9 @@
   POST /detect       {cues:[{start,end,text}], duration, target_count?, detector?, words?:[...], video?} → 区間データ
   POST /transcribe   本文 = 音声(wav/webm/mp3 など)。?language=ja&model=small&words=1  → {language, duration, cues, words?}
   POST /corrections  {video, action, from_s?, to_s?}   GET /corrections?video=...   POST /corrections/undo {video}
-  GET  /me                      自分の情報と、共有範囲   POST /me/forget   自分の修正・共有を全部消す
+  POST /live {session?, cues:[{start,end,text}], now_s?} → {session, now_s, markers:[{t,status,score}]}  ライブ(CH5)。字幕を足すと暫定・確定の印を返す
+  POST /live/close {session}
+  GET  /me                      自分の情報と、共有範囲   POST /me/forget   自分の修正・共有・ライブのセッションを全部消す
   POST /shares {video, boundaries, titles?, duration?, audience}   GET /shares?video=...   POST /shares/revoke {video}
   管理者だけ:
   GET/POST /admin/users   POST /admin/users/<id>/{disable|enable|rotate|purge|role}
@@ -25,7 +27,6 @@
 
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import secrets
@@ -43,6 +44,7 @@ from .audit import AuditLog, RateLimiter
 from .captions import Cue
 from .corrections import CorrectionError, CorrectionStore
 from .detectors import available, get_detector
+from .live_sessions import MAX_PUSH_CUES, LiveSessionError, LiveSessions
 from .schema import segments_from_boundaries, to_document
 from .sharing import ShareError, ShareStore, validate_share
 
@@ -87,6 +89,7 @@ class Config:
         self.accounts = AccountStore(self.home / "accounts.db")
         self.accounts.ensure_bootstrap_admin(self.token)  # 既存の token ファイルの token = 管理者 local
         self.shares = ShareStore(self.home / "shares.db")
+        self.live = LiveSessions()
         self.limiter = RateLimiter(rate_limits if rate_limits is not None else DEFAULT_RATE_LIMITS)
 
     def close(self) -> None:
@@ -272,6 +275,10 @@ def make_handler(cfg: Config):
                 return 200, self._detect(self._json())
             if route == "/v1/transcribe" and method == "POST":
                 return 200, self._transcribe(query)
+            if route == "/v1/live" and method == "POST":
+                return 200, self._live_push(self._json())
+            if route == "/v1/live/close" and method == "POST":
+                return 200, {"closed": cfg.live.close(self.user["id"], str(self._json().get("session", "")))}
             if route == "/v1/corrections" and method == "POST":
                 return 200, self._corrections_post(self._json())
             if route == "/v1/corrections" and method == "GET":
@@ -283,6 +290,7 @@ def make_handler(cfg: Config):
                 return 200, {"user": self.user, "share_mode": cfg.accounts.share_mode}
             if route == "/v1/me/forget" and method == "POST":
                 n_c, n_s = cfg.store.delete_owner(self.user["id"]), cfg.shares.delete_owner(self.user["id"])
+                cfg.live.delete_owner(self.user["id"])
                 self._event("me.forget", corrections=n_c, shares=n_s)
                 return 200, {"deleted": {"corrections": n_c, "shares": n_s}}
             if route == "/v1/shares" and method == "POST":
@@ -349,6 +357,7 @@ def make_handler(cfg: Config):
                     elif action == "purge":
                         cfg.accounts.check_manageable(uid, "削除")
                         n_c, n_s = cfg.store.delete_owner(uid), cfg.shares.delete_owner(uid)
+                        cfg.live.delete_owner(uid)
                         cfg.accounts.delete_user(uid)
                         self._event("admin.user.purge", target=uid, corrections=n_c, shares=n_s)
                         return 200, {"purged": uid, "deleted": {"corrections": n_c, "shares": n_s}}
@@ -373,6 +382,28 @@ def make_handler(cfg: Config):
             except AccountError as e:
                 raise HttpError(404 if "いません" in str(e) else 400, str(e))
             raise HttpError(404, "そのエンドポイントはありません")
+
+        # ---- ライブ(CH5) ----
+        def _live_push(self, body: dict) -> dict:
+            raw = body.get("cues", [])
+            if not isinstance(raw, list):
+                raise HttpError(400, "cues は配列です")
+            if len(raw) > MAX_PUSH_CUES:
+                raise HttpError(413, f"1 回に送れる字幕は {MAX_PUSH_CUES} 個までです")
+            cues = _validate_cues(raw) if raw else []
+            now_s = body.get("now_s")
+            if now_s is not None and not (isinstance(now_s, (int, float)) and not isinstance(now_s, bool) and 0 <= now_s < 24 * 3600):
+                raise HttpError(400, "now_s が不正です")
+            session = body.get("session")
+            if session is not None and not (isinstance(session, str) and 0 < len(session) <= 64):
+                raise HttpError(400, "session が不正です")
+            try:
+                sid, out = cfg.live.push(self.user["id"], session, cues, now_s)
+            except LiveSessionError as e:
+                raise HttpError(404, str(e))
+            if out.pop("created"):
+                self._event("live.start")
+            return {"session": sid, **out}
 
         def _detect(self, body: dict) -> dict:
             cues = _validate_cues(body.get("cues"))

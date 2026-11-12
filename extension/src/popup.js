@@ -52,5 +52,7 @@
     say("停止しました。");
   });
 
+  $("admin").addEventListener("click", () => { chrome.tabs.create({ url: chrome.runtime.getURL("src/admin.html") }); window.close(); });
+
   init();
 })();

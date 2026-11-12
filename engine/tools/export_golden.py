@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 
 from chapterlens.detectors import get_detector  # noqa: E402
+from chapterlens.digest import select_digest  # noqa: E402
 from chapterlens.evaluation import load_dataset  # noqa: E402
 from synth import make_video  # noqa: E402
 
@@ -28,6 +29,7 @@ CASES = [
     ("en-short", [90, 80], "en", 15),
 ]
 TARGETS = (None, 3, 6)
+DIGEST_RATIOS = (0.2, 0.35)  # ダイジェスト(digest@1)の、予算の割合
 
 
 def run(det, cues, duration, k):
@@ -50,6 +52,14 @@ def export_golden() -> Path:
                 "expect": {
                     ("free" if k is None else f"k{k}"): run(det, cues, duration, k)
                     for k in TARGETS
+                },
+                # ダイジェストは、k3 の境界を入力にする(JavaScript 版も同じ境界で呼ぶ)
+                "digest": {
+                    f"r{r}": [
+                        {"start": s["start_s"], "end": s["end_s"], "score": s["score"], "chapter": s["chapter"]}
+                        for s in select_digest(cues, run(det, cues, duration, 3)["boundaries"], duration, ratio=r)
+                    ]
+                    for r in DIGEST_RATIOS
                 },
             }
         )
@@ -78,6 +88,10 @@ def export_real() -> Path:
                 ],
                 "free": run(det, v["cues"], v["duration_s"], None),
                 "k6": run(det, v["cues"], v["duration_s"], 6),
+                "digest": [  # k6 の境界を入力にしたダイジェスト(JavaScript 版と突き合わせる)
+                    {"start": d["start_s"], "end": d["end_s"], "chapter": d["chapter"]}
+                    for d in select_digest(v["cues"], run(det, v["cues"], v["duration_s"], 6)["boundaries"], v["duration_s"])
+                ],
             }
         )
     out = ROOT / "results" / "parity_python.json"

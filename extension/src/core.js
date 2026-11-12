@@ -349,10 +349,190 @@
     }));
   }
 
+  // ---------- ダイジェスト(CH4。engine/digest.py の digest@1 の JavaScript 版) ----------
+  const REST_EPS = 1e-12;
+  const DIGEST = Object.freeze({ unitS: 15, ratio: 0.2, wInfo: 0.5, wCentral: 0.5, wLead: 0.25, minSpanS: 5, endSlackS: 5 });
+
+  function cosineOrZero(a, b) {
+    return a.size === 0 || b.size === 0 ? 0 : cosine(a, b); // 片側が空なら重なりは 0(検出器の cosine は 1)
+  }
+
+  /**
+   * 重要な区間 [{start, end, score, chapter}](昇順・重ならない)。動画は切り出さず、飛ぶための区間リストだけ。
+   * 手順は digest.py と同じ(15 秒のかたまりを、情報量・章の代表性・章の導入で採点 → 各章の最高点 → 点の高い順に予算まで →
+   * 1 つ空いたすき間を埋めて連続をまとめる)。
+   */
+  function selectDigest(cues, boundaries, durationS, options) {
+    const o = Object.assign({}, DIGEST, options || {});
+    const unitS = o.unitS;
+    const n = durationS > 0 ? Math.ceil(durationS / unitS) : 0;
+    if (n < 2 || cues.length === 0 || !(o.ratio > 0 && o.ratio <= 1)) return [];
+
+    const unitCues = Array.from({ length: n }, () => []);
+    const counts = Array.from({ length: n }, () => new Map());
+    for (const cue of cues) {
+      const u = Math.min(n - 1, Math.max(0, Math.floor(cue.start / unitS)));
+      unitCues[u].push(cue);
+      addCounts(counts[u], termCounts(cue.text));
+    }
+    const df = new Map();
+    for (const c of counts) for (const t of c.keys()) df.set(t, (df.get(t) || 0) + 1);
+    const idf = new Map();
+    for (const [t, k] of df) idf.set(t, Math.log((n + 1) / (k + 1)) + 1.0);
+    const vectors = counts.map((unit) => {
+      const v = new Map();
+      for (const [t, c] of unit) v.set(t, (1.0 + Math.log(c)) * idf.get(t));
+      return v;
+    });
+    const info = vectors.map((v) => { let s = 0; for (const x of v.values()) s += x; return s; });
+    let top = 0;
+    for (const x of info) if (x > top) top = x;
+    if (!(top > 0)) return [];
+
+    const cuts = boundaries.filter((b) => b > 0 && b < durationS).sort((a, b) => a - b);
+    const chapter = Array.from({ length: n }, (_, i) => bisectRight(cuts, (i + 0.5) * unitS));
+    const members = new Map();
+    chapter.forEach((ch, i) => { if (!members.has(ch)) members.set(ch, []); members.get(ch).push(i); });
+
+    const score = new Array(n).fill(0);
+    for (const idxs of members.values()) {
+      const total = new Map(); // 章の合計。「自分以外」は、ここから自分を引いて作る(digest.py と同じ)
+      for (const j of idxs) for (const [t, x] of vectors[j]) total.set(t, (total.get(t) || 0) + x);
+      idxs.forEach((i, pos) => {
+        if (info[i] <= 0) return;
+        const others = new Map();
+        for (const [t, x] of total) {
+          const rest = x - (vectors[i].get(t) || 0);
+          if (rest > REST_EPS) others.set(t, rest);
+        }
+        score[i] = o.wInfo * (info[i] / top) + o.wCentral * cosineOrZero(vectors[i], others) + (pos === 0 ? o.wLead : 0);
+      });
+    }
+
+    const budget = Math.max(1, Math.floor(o.ratio * n + 0.5));
+    const ranked = [];
+    for (let i = 0; i < n; i++) if (info[i] > 0) ranked.push(i);
+    ranked.sort((a, b) => score[b] - score[a] || a - b);
+    const perChapter = [];
+    for (const ch of [...members.keys()].sort((a, b) => a - b)) {
+      const best = ranked.find((i) => chapter[i] === ch);
+      if (best !== undefined) perChapter.push(best);
+    }
+    perChapter.sort((a, b) => score[b] - score[a] || a - b);
+    const taken = new Set(perChapter.slice(0, budget));
+    let count = taken.size;
+    for (const i of ranked) {
+      if (count >= budget) break;
+      if (!taken.has(i)) { taken.add(i); count++; }
+    }
+    const picked = [...taken].sort((a, b) => a - b);
+    if (picked.length === 0) return [];
+
+    const groups = [[picked[0]]];
+    for (const i of picked.slice(1)) {
+      const g = groups[groups.length - 1];
+      if (i - g[g.length - 1] <= 2) { for (let k = g[g.length - 1] + 1; k <= i; k++) g.push(k); }
+      else groups.push([i]);
+    }
+    const spans = [];
+    for (const g of groups) {
+      const inSpan = g.flatMap((u) => unitCues[u]);
+      if (inSpan.length === 0) continue;
+      const start = Math.min(...inSpan.map((c) => c.start));
+      const end = Math.min(Math.max(...inSpan.map((c) => c.end)), (g[g.length - 1] + 1) * unitS + o.endSlackS, durationS);
+      if (end - start < o.minSpanS) continue;
+      const s = Math.max(...g.map((u) => score[u]));
+      spans.push({ start: round3(start), end: round3(end), score: round3(Math.min(1.0, s)), chapter: chapter[g[0]] });
+    }
+    for (let k = 0; k + 1 < spans.length; k++) if (spans[k].end > spans[k + 1].start) spans[k].end = spans[k + 1].start;
+    return spans.filter((s) => s.end - s.start >= o.minSpanS);
+  }
+
+  function mergeIntervals(list) {
+    const out = [];
+    for (const [a, b] of list.slice().sort((x, y) => x[0] - y[0] || x[1] - y[1])) {
+      if (b <= a) continue;
+      if (out.length && a <= out[out.length - 1][1]) out[out.length - 1][1] = Math.max(out[out.length - 1][1], b);
+      else out.push([a, b]);
+    }
+    return out;
+  }
+
+  /** 自動の区間と、利用者が調整した区間の、時間での一致(digest.py の agreement と同じ)。 */
+  function digestAgreement(auto, reference) {
+    const a = mergeIntervals(auto.map((s) => [s.start, s.end]));
+    const r = mergeIntervals(reference.map((s) => [s.start, s.end]));
+    const len = (xs) => xs.reduce((s, [x, y]) => s + (y - x), 0);
+    const la = len(a), lr = len(r);
+    let inter = 0;
+    for (let i = 0, j = 0; i < a.length && j < r.length;) {
+      const lo = Math.max(a[i][0], r[j][0]), hi = Math.min(a[i][1], r[j][1]);
+      if (hi > lo) inter += hi - lo;
+      if (a[i][1] < r[j][1]) i++; else j++;
+    }
+    if (la === 0 && lr === 0) return { precision: 1, recall: 1, f1: 1 };
+    const p = la ? inter / la : 0, rc = lr ? inter / lr : 0;
+    const f1 = p + rc ? (2 * p * rc) / (p + rc) : 0;
+    const r4 = (x) => Math.round(x * 10000) / 10000;
+    return { precision: r4(p), recall: r4(rc), f1: r4(f1) };
+  }
+
+  /**
+   * 再生中の自動シーク。いまの位置 t に対して、次にすること:
+   *   区間の中 → null(そのまま再生)/ 区間と区間のすき間 → {seekTo: 次の区間の頭}/ 最後の区間の後ろ → {done: true}
+   * 区間の終わりの手前 endGuardS 秒に入ったら、もう「すき間」とみなす(timeupdate は約 0.25 秒おきなので、取りこぼさない)。
+   */
+  function digestNext(spans, t, endGuardS) {
+    const guard = endGuardS === undefined ? 0.15 : endGuardS;
+    for (const s of spans) {
+      if (t >= s.start - 1e-6 && t < s.end - guard) return null;
+      if (t < s.start) return { seekTo: s.start };
+    }
+    return { done: true };
+  }
+
+  // ---------- 章の調整(利用者が境界を消す・動かす・足す。CH3b) ----------
+  const EDIT_MIN_GAP_S = 5; // 境界どうし・先頭/末尾との最小の間隔(これより短い章は作らない)
+
+  /** 境界の列を整える: 数でない・範囲外・近すぎるものを除き、昇順にする。 */
+  function normalizeBoundaries(list, durationS, minGapS) {
+    const gap = minGapS === undefined ? EDIT_MIN_GAP_S : minGapS;
+    const out = [];
+    const sorted = list.filter((x) => typeof x === "number" && Number.isFinite(x) && x >= gap && (!(durationS > 0) || x <= durationS - gap)).sort((a, b) => a - b);
+    for (const b of sorted) if (out.length === 0 || b - out[out.length - 1] >= gap) out.push(round3(b));
+    return out;
+  }
+
+  /** i 番目の境界を消した列。範囲外なら null。 */
+  function removeBoundary(list, i) {
+    if (!Number.isInteger(i) || i < 0 || i >= list.length) return null;
+    return list.filter((_, k) => k !== i);
+  }
+
+  /** i 番目の境界を delta 秒動かした列。前後の境界・先頭・末尾と minGap 未満になるなら null。 */
+  function moveBoundary(list, i, delta, durationS, minGapS) {
+    const gap = minGapS === undefined ? EDIT_MIN_GAP_S : minGapS;
+    if (!Number.isInteger(i) || i < 0 || i >= list.length || !Number.isFinite(delta)) return null;
+    const t = list[i] + delta;
+    const prev = i > 0 ? list[i - 1] : 0;
+    const next = i + 1 < list.length ? list[i + 1] : (durationS > 0 ? durationS : Infinity);
+    if (t - prev < gap || next - t < gap) return null;
+    return list.map((b, k) => (k === i ? round3(t) : b));
+  }
+
+  /** 時刻 t に境界を足した列。既存の境界・先頭・末尾と minGap 未満なら null。 */
+  function addBoundary(list, t, durationS, minGapS) {
+    const gap = minGapS === undefined ? EDIT_MIN_GAP_S : minGapS;
+    if (!Number.isFinite(t) || t < gap || (durationS > 0 && t > durationS - gap)) return null;
+    if (list.some((b) => Math.abs(b - t) < gap)) return null;
+    return list.concat([round3(t)]).sort((a, b) => a - b);
+  }
+
   return {
     tokens, termCounts, cosine, similarityCurve, selectBoundaries, refineBoundaries, snap,
     detect, detectPartial, V2_PARAMS, GRANULARITY, targetCountFor,
     formatTimestamp, excerpt, buildChapters, descriptionText, chapterIndexAt, cuesFromRows,
-    PreparedCues,
+    PreparedCues, DIGEST, selectDigest, digestAgreement, digestNext,
+    EDIT_MIN_GAP_S, normalizeBoundaries, removeBoundary, moveBoundary, addBoundary,
   };
 });

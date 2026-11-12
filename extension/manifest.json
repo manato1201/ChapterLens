@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChapterLens",
-  "version": "0.2.0",
-  "description": "YouTube の動画に、話題の切り替えから作った目次(チャプター)を重ねて表示します。字幕があれば拡張の中だけで処理します。字幕が無い動画では、この PC の中のエンジン(127.0.0.1)だけに音声を渡して文字にします。",
+  "version": "0.3.0",
+  "description": "YouTube の動画に、話題の切り替えから作った目次(チャプター)を重ねて表示します。字幕があれば拡張の中だけで処理します。字幕が無い動画・ライブでは、この PC の中のエンジン(127.0.0.1)だけに音声を渡して文字にします。ダイジェストの自動シーク・章の調整・少人数での共有にも対応します。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtTefXQBZIhhiuIwS/uAzRhPSIN9I3G/gaSmQXmPsscf1p+E6aXj3g1RSVqQedP1F2b+y9U+r6UQSh9XHws6vTyJBgtD4RZHJavuzS9UK0hzY3F2mYxUWS3XsebrEQTWmgmonFztG7qFh9OYU8XUy4GYl5HbxgES8NyPphZYW/HmBtJ/W1ulYzHCrRk5xrMIKHDzShOJ+c1HQ0LbMBGuZwAU7bAIlJi3yO/1XEjw2CF9LPHaIUFKHTnCFFn7hR9ckK70ixiBRcG4PK1UsgfUbJRf8coKipC4R+BXhCuUT+TVXwns3nw531uw7K1d2tcxyE8AwMu3KyEssshqbdB9NawIDAQAB",
   "permissions": [
     "storage",
@@ -28,6 +28,8 @@
       "js": [
         "src/core.js",
         "src/capture.js",
+        "src/store.js",
+        "src/engine.js",
         "src/transcript.js",
         "src/ui.js",
         "src/content.js"

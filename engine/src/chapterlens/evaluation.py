@@ -22,7 +22,7 @@ import statistics
 from pathlib import Path
 
 from . import baselines
-from .captions import Cue, parse_captions
+from .captions import parse_captions
 from .chapters import boundaries_from_chapters, parse_description_chapters
 from .detectors import get_detector
 from .metrics import (
