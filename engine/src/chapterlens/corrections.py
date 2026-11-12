@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import functools
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -20,6 +22,17 @@ DEFAULT_TOL_S = 3.0  # 「この境界のことだ」と対応づける許容(�
 
 class CorrectionError(ValueError):
     pass
+
+
+def _locked(fn):
+    """サーバーは複数のスレッドから呼ぶので、SQLite の操作を 1 つずつにする。"""
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 def apply_corrections(boundaries: list[float], corrections: list[dict], *, tol_s: float = DEFAULT_TOL_S) -> list[float]:
@@ -76,6 +89,7 @@ def to_reference(boundaries: list[float], titles: list[str] | None = None) -> di
 class CorrectionStore:
     def __init__(self, path: str | Path = ":memory:") -> None:
         self.db = sqlite3.connect(str(path), check_same_thread=False)
+        self._lock = threading.RLock()
         self.db.execute(
             """CREATE TABLE IF NOT EXISTS corrections (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,6 +105,7 @@ class CorrectionStore:
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_corr_owner_video ON corrections (owner, video_key)")
         self.db.commit()
 
+    @_locked
     def record(self, owner: str, video_key: str, action: str, *, from_s: float | None = None,
                to_s: float | None = None, detector: str | None = None) -> int:
         if action not in ACTIONS:
@@ -111,6 +126,7 @@ class CorrectionStore:
         self.db.commit()
         return int(cur.lastrowid)
 
+    @_locked
     def list(self, owner: str, video_key: str) -> list[dict]:
         rows = self.db.execute(
             "SELECT id, action, from_s, to_s, detector, created_at FROM corrections WHERE owner=? AND video_key=? ORDER BY created_at, id",
@@ -118,6 +134,7 @@ class CorrectionStore:
         ).fetchall()
         return [dict(zip(("id", "action", "from_s", "to_s", "detector", "created_at"), r)) for r in rows]
 
+    @_locked
     def undo_last(self, owner: str, video_key: str) -> bool:
         row = self.db.execute(
             "SELECT id FROM corrections WHERE owner=? AND video_key=? ORDER BY created_at DESC, id DESC LIMIT 1", (owner, video_key)
@@ -128,13 +145,23 @@ class CorrectionStore:
         self.db.commit()
         return True
 
+    @_locked
     def stats(self, owner: str) -> dict:
         rows = self.db.execute("SELECT action, COUNT(*) FROM corrections WHERE owner=? GROUP BY action", (owner,)).fetchall()
         videos = self.db.execute("SELECT COUNT(DISTINCT video_key) FROM corrections WHERE owner=?", (owner,)).fetchone()[0]
         return {"by_action": dict(rows), "videos": videos}
 
+    @_locked
     def corrected(self, owner: str, video_key: str, boundaries: list[float], *, tol_s: float = DEFAULT_TOL_S) -> list[float]:
         return apply_corrections(boundaries, self.list(owner, video_key), tol_s=tol_s)
 
+    @_locked
+    def delete_owner(self, owner: str) -> int:
+        """利用者の修正を全部消す(本人の「忘れる」・管理者の削除)。"""
+        cur = self.db.execute("DELETE FROM corrections WHERE owner=?", (owner,))
+        self.db.commit()
+        return cur.rowcount
+
+    @_locked
     def close(self) -> None:
         self.db.close()

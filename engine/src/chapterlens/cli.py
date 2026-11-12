@@ -127,6 +127,63 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_admin(args: argparse.Namespace) -> int:
+    """この PC の管理者(ファイルを触れる人)が、利用者・共有範囲・監査ログを操作する。サーバーを止めていても使える。"""
+    from .accounts import AccountError, AccountStore
+    from .audit import AuditLog
+    from .corrections import CorrectionStore
+    from .server import default_home, load_or_create_token
+    from .sharing import ShareStore
+
+    home = default_home()
+    accounts = AccountStore(home / "accounts.db")
+    accounts.ensure_bootstrap_admin(load_or_create_token(home))
+    audit = AuditLog(home / "audit.log")
+    try:
+        cmd = args.admin_command
+        if cmd == "users":
+            for u in accounts.list_users():
+                print(f"{u['id']:<12} {u['role']:<6} {'停止中' if u['disabled'] else '有効  '} {u['name']}")
+        elif cmd == "add-user":
+            user, token = accounts.create_user(args.name, args.role)
+            audit.event("cli", "admin.user.create", target=user["id"], role=user["role"])
+            print(f"作成: {user['id']}  {user['name']}  ({user['role']})")
+            print(f"token(この 1 回だけ表示。保存されません。本人にだけ渡す): {token}")
+        elif cmd in ("disable", "enable"):
+            u = accounts.set_disabled(args.id, cmd == "disable")
+            audit.event("cli", f"admin.user.{cmd}", target=u["id"])
+            print(f"{u['name']} を{'停止' if cmd == 'disable' else '有効に'}しました")
+        elif cmd == "rotate":
+            token = accounts.rotate_token(args.id)
+            audit.event("cli", "admin.user.rotate", target=args.id)
+            print(f"新しい token(この 1 回だけ表示): {token}")
+        elif cmd == "purge":
+            if not args.yes:
+                print("利用者・その修正・共有を完全に消します。元に戻せません。実行するなら --yes を付けてください")
+                return 1
+            accounts.check_manageable(args.id, "削除")
+            store, shares = CorrectionStore(home / "corrections.db"), ShareStore(home / "shares.db")
+            n_c, n_s = store.delete_owner(args.id), shares.delete_owner(args.id)
+            accounts.delete_user(args.id)
+            audit.event("cli", "admin.user.purge", target=args.id, corrections=n_c, shares=n_s)
+            print(f"削除しました(修正 {n_c} 件・共有 {n_s} 件)")
+        elif cmd == "share-mode":
+            if args.mode:
+                before = accounts.share_mode
+                accounts.set_share_mode(args.mode)
+                audit.event("cli", "admin.settings.share_mode", before=before, after=args.mode)
+            print(f"共有範囲: {accounts.share_mode}(off=共有しない / team=全員か指定した人 / named=指定した人だけ)")
+        elif cmd == "audit":
+            for rec in audit.tail(args.n):
+                print(json.dumps(rec, ensure_ascii=False))
+    except AccountError as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+    finally:
+        accounts.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -177,6 +234,24 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--allow-origin", action="append", help="呼ぶことを許す Origin(例 chrome-extension://<id>)。複数可")
     sv.add_argument("--max-audio-mb", type=int, default=300)
     sv.set_defaults(func=_cmd_serve)
+
+    ad = sub.add_parser("admin", help="利用者・共有範囲・監査ログの管理(この PC の管理者用。サーバーを止めていても使える)")
+    adsub = ad.add_subparsers(dest="admin_command", required=True)
+    adsub.add_parser("users", help="利用者の一覧")
+    au = adsub.add_parser("add-user", help="利用者を追加する(token は 1 度だけ表示)")
+    au.add_argument("name")
+    au.add_argument("--role", default="user", choices=["user", "admin"])
+    for name, h in (("disable", "利用者を停止する"), ("enable", "停止を解く"), ("rotate", "token を再発行する(古い token は無効)")):
+        x = adsub.add_parser(name, help=h)
+        x.add_argument("id")
+    pu = adsub.add_parser("purge", help="利用者と、その修正・共有を完全に消す")
+    pu.add_argument("id")
+    pu.add_argument("--yes", action="store_true")
+    sm = adsub.add_parser("share-mode", help="共有範囲を見る/変える(off / team / named)")
+    sm.add_argument("mode", nargs="?", choices=["off", "team", "named"])
+    ag = adsub.add_parser("audit", help="監査ログの末尾")
+    ag.add_argument("-n", type=int, default=50)
+    ad.set_defaults(func=_cmd_admin)
 
     args = parser.parse_args(argv)
     if args.command == "eval" and not args.detector:

@@ -36,6 +36,26 @@ uv run --extra asr python -m chapterlens serve --allow-origin chrome-extension:/
 - **正直な限界**: ①音声は**合成音声**(静かで明瞭)。実際の動画(BGM・複数人・雑音)の精度ではない。②他人の動画の音声は、方針(設計書 §2)により取得しないので、**実データでの ±3 秒の F1 は測れていない**。自分の動画・許諾済みの素材でないと測れない。③検出器 v2 の最小間隔(60 秒)は、3 分半の短い音声には長すぎる(話題が 55 秒の合成音声では、境界が減る)。
 - テスト音声: `uv run python tools/make_tts_fixture.py all`(Windows)→ `results/tts/`。確認: `uv run --extra asr python tools/asr_check.py all`・`CHAPTERLENS_ASR_TESTS=1 uv run --extra asr pytest tests/test_asr_integration.py`。
 
+## CH3: 少人数での利用(利用者・管理者・共有・監査ログ)
+```bash
+uv run python -m chapterlens admin add-user alice          # 利用者を追加(token は 1 度だけ表示。本人にだけ渡す)
+uv run python -m chapterlens admin users                   # 一覧
+uv run python -m chapterlens admin share-mode team         # 共有範囲(off=既定 / team / named)
+uv run python -m chapterlens admin disable|enable|rotate <ID>   # 停止 / 再開 / token の再発行
+uv run python -m chapterlens admin purge <ID> --yes        # 利用者と、その修正・共有を完全に消す
+uv run python -m chapterlens admin audit -n 50             # 監査ログの末尾
+```
+`admin` は、この PC のファイルを触れる人(=管理者)用で、サーバーを止めていても使える。サーバー稼働中に追加した利用者も、再起動なしで使える(認証のたびにデータベースを見る)。
+
+- **役割**: `user`(自分のデータだけ)と `admin`(利用者・共有範囲・監査ログ)。**認可はエンジンの側**で、token から引いた役割だけを見る(S-A。ヘッダ・本文・クエリで「管理者です」と名乗っても無視)。既存の `~/.chapterlens/token` の token は、そのまま管理者 `local`。`local` は、停止・削除・役割変更ができない(管理者が誰もいなくなる事故を防ぐ。token ファイルを消せば作り直せる)
+- **token(S-B)**: 利用者ごとに 256 ビットの乱数。**保存するのはハッシュ(SHA-256)だけ**で、作った時に 1 度だけ表示する。不明な token も停止中の利用者も、同じ `401`(区別させない)
+- **分離(S-F)**: 修正は利用者ごと。管理者でも、API では他人の修正は見えない。本人は `POST /v1/me/forget` で、自分の修正・共有を全部消せる
+- **共有は許可つき**: ①管理者が共有範囲を決める(`off`=既定・誰も共有できない / `team` / `named`)②利用者が、動画ごとに明示して公開する(`audience`: `"team"` か、指定した利用者の ID)③相手に見えるのは、自分に向けて公開されたものだけ。停止された利用者のものは見えない。いつでも取り下げられる(共有範囲が `off` でも)。**共有するのは区間データだけ**(境界の秒・長さ・60 文字までの題名)。字幕・音声・動画は共有できず、余計な項目を付けると拒否する
+- **監査ログ(S-C)**: 経路ごとの記録(時刻・利用者 ID・役割・結果・所要時間)に加え、**管理操作・共有・設定変更・「忘れる」**を操作名つきで残す。**token・字幕・題名・動画 ID は残さない**(動画は同じものと分かる短い印だけ)。5MB で 1 世代だけ回す
+- **レート制限(S-D)**: 利用者ごと・経路の種類ごと(通常 240 回/分・音声 30 回/分・管理 60 回/分)。超えると `429` と `Retry-After`。認証に失敗した呼び出しは、他の人の枠を減らさない
+- **API**: `GET /v1/me`・`POST /v1/me/forget`・`POST/GET /v1/shares`・`POST /v1/shares/revoke`。管理者だけ: `GET/POST /v1/admin/users`・`POST /v1/admin/users/<id>/{disable|enable|rotate|purge|role}`・`GET/POST /v1/admin/settings`・`GET /v1/admin/audit`
+- **限界(正直に)**: ①**拡張には、共有・管理の画面がまだ無い**(エンジンの API と `admin` CLI だけ。拡張側は CH3b)。②認証は token だけ(パスワード・OAuth ではない)。token の総当たりは、256 ビットなので現実的でないが、失敗回数での締め出しは無い。③ファイルの権限(0600)は、Windows では効かない(ホーム `~/.chapterlens` を、他のユーザーに読ませない運用が前提)。④「よく直される箇所の統計」(設計書 §9 ③)は、共有の使われ方を見てから(機能の膨張を避けるため、まだ作っていない)。⑤開発者の機能(評価・生ログ)は、HTTP には出していない(CLI だけ=既定で無効)
+
 ## 評価データの置き方(`dataset/`。git に入れない・公開しない)
 動画 1 本 = 1 フォルダ。**動画・音声は置かない**(字幕のテキストと正解の時刻だけ)。
 ```
@@ -62,6 +82,7 @@ dataset/<id>/chapters.json   {"chapters": [{"start_s": 0, "title": "導入"}, ..
 - `metrics.py` 境界の F1(許容つき・1 対 1)・打刻のずれ・区間数の比 / `baselines.py` 基準
 - `evaluation.py` データの読み込みと評価・判定・Markdown のレポート / `schema.py` 区間と意味のデータ
 - `text.py` 軽い分かち書き(かな・漢字は 2 文字の組、英語は単語)
+- `accounts.py` 利用者・役割・token(ハッシュ)・設定 / `sharing.py` 区間データの共有(検証と公開範囲)/ `audit.py` 監査ログとレート制限 / `server.py` HTTP(認証→制限→経路→役割の確認)
 
 ## 注意
 - **`topic_shift.py` の `min_depth`(0.4)などの既定値は仮**。合成データで決めたもので、実データで決め直す。
