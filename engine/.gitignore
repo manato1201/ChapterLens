@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# 評価データ(他人の動画の字幕。ローカルのみ・公開しない)と評価結果
+dataset/
+results/
