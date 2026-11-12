@@ -101,3 +101,25 @@ test("detect: 字幕なし・短すぎる・長さ 0 は境界なし(例外を�
   assert.deepEqual(core.detect(cues, 15).boundaries, []);
   assert.deepEqual(core.detect(cues, 0).boundaries, []);
 });
+
+// ---- 途中から聞いた字幕(音声の取り込み) ----
+test("detectPartial: 先頭が空でも、空と内容の差を境界と誤らない。最初の字幕が 0 秒付近なら detect と同じ", () => {
+  const T = [
+    ["ギター", "弦", "コード", "演奏", "音色", "ピック", "指板", "リズム"],
+    ["料理", "野菜", "包丁", "出汁", "味噌", "鍋", "火加減", "調味料"],
+    ["天気", "気温", "湿度", "台風", "降水", "前線", "高気圧", "予報"],
+  ];
+  const cues = [];
+  for (let t = 0; t < 360; t += 6) {
+    const w = T[Math.floor(t / 120)];
+    cues.push({ start: t, end: t + 6, text: Array.from({ length: 5 }, (_, i) => w[(t / 6 + i * 3) % w.length]).join("") + "について話します" });
+  }
+  assert.deepEqual(core.detectPartial(cues, 360).boundaries, core.detect(cues, 360).boundaries); // 0 秒始まりは同じ
+  // 600 秒から聞き始めた(同じ内容を 600 秒ずらす)。本当の境界は 720・840
+  const late = cues.map((c) => ({ ...c, start: c.start + 600, end: c.end + 600 }));
+  const naive = core.detect(late, 960).boundaries;
+  const part = core.detectPartial(late, 960).boundaries;
+  assert.ok(naive.some((b) => b < 700), `素の detect は、空との差を境界にしてしまう: ${naive}`);
+  assert.equal(part.length, 2);
+  assert.ok(Math.abs(part[0] - 720) <= 12 && Math.abs(part[1] - 840) <= 12, `境界 ${part}`);
+});

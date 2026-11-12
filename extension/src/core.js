@@ -262,6 +262,19 @@
     return selectBoundaries(sims, cues, durationS, p, opts.targetCount === undefined ? null : opts.targetCount, opts.prepared);
   }
 
+  /**
+   * 途中から聞いた(取り込んだ)字幕の検出。最初の字幕より前は「空」なので、そのまま検出すると
+   * 「空 → 内容」の差を話題の切り替えと誤る。最初の字幕を 0 秒に詰めてから検出し、境界を元の時刻へ戻す。
+   * 最初の字幕が 0 秒付近なら、detect と同じ。
+   */
+  function detectPartial(cues, durationS, options) {
+    const first = cues.length ? Math.min(...cues.map((c) => c.start)) : 0;
+    if (first <= 1) return detect(cues, durationS, options);
+    const shifted = cues.map((c) => ({ start: c.start - first, end: c.end - first, text: c.text }));
+    const det = detect(shifted, durationS - first, options);
+    return Object.assign({}, det, { boundaries: det.boundaries.map((b) => b + first) });
+  }
+
   // ---------- 粒度・章・書式(拡張の画面で使う) ----------
   /**
    * 利用者が選ぶ「粒度」。区間数 = round(動画の長さ ÷ segLenS) - 1。
@@ -338,7 +351,7 @@
 
   return {
     tokens, termCounts, cosine, similarityCurve, selectBoundaries, refineBoundaries, snap,
-    detect, V2_PARAMS, GRANULARITY, targetCountFor,
+    detect, detectPartial, V2_PARAMS, GRANULARITY, targetCountFor,
     formatTimestamp, excerpt, buildChapters, descriptionText, chapterIndexAt, cuesFromRows,
     PreparedCues,
   };

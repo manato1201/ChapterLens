@@ -10,9 +10,10 @@
   const Core = window.ChapterLensCore;
   const Transcript = window.ChapterLensTranscript;
   const UI = window.ChapterLensUI;
+  const Capture = window.ChapterLensCapture;
 
   const PREF_KEY = "chapterlens.granularity";
-  const state = { videoId: null, cues: null, duration: 0, granularity: "standard", chapters: [], busy: false, ui: null, boundAt: null };
+  const state = { videoId: null, cues: null, duration: 0, granularity: "standard", chapters: [], busy: false, ui: null, boundAt: null, capture: null };
 
   const isWatch = () => location.pathname === "/watch";
   const currentVideoId = () => new URL(location.href).searchParams.get("v");
@@ -56,11 +57,22 @@
     drawMarkers();
   }
 
+  // 音声から作っている間は、聞き終えた所までが対象(まだ聞いていない後ろを、空の章にしない)
+  function analysisDuration() {
+    if (!state.capture || state.cues.length === 0) return state.duration;
+    const covered = Math.max(...state.cues.map((c) => c.end));
+    return state.duration > 0 && covered >= state.duration - 5 ? state.duration : covered;
+  }
+
   function analyze() {
+    if (!state.cues || state.cues.length === 0) return;
     const t0 = performance.now();
-    const target = Core.targetCountFor(state.granularity, state.duration);
-    const det = Core.detect(state.cues, state.duration, { targetCount: target === null ? undefined : target });
-    state.chapters = Core.buildChapters(det.boundaries, state.cues, state.duration);
+    const dur = analysisDuration();
+    const heard = state.capture ? dur - Math.min(...state.cues.map((c) => c.start)) : dur; // 聞いた長さ(途中から取り込んだときも、動画上の位置ではなく聞いた分で数える)
+    if (state.capture && heard < 90) { render(); state.ui.setStatus("音声を聞いています。もう少し再生すると、章に分けられます。"); return; }
+    const target = Core.targetCountFor(state.granularity, heard); // 粒度は「聞いた長さ」に対して数える
+    const det = Core.detectPartial(state.cues, dur, { targetCount: target === null ? undefined : target });
+    state.chapters = Core.buildChapters(det.boundaries, state.cues, dur);
     const ms = Math.round(performance.now() - t0);
     render();
     const n = state.chapters.length;
@@ -69,13 +81,14 @@
   }
 
   const ERRORS = {
-    "no-button": "この動画には文字起こしがないようです(字幕のない動画には、まだ対応していません)。",
+    "no-button": "この動画には文字起こしがないようです。ツールバーの ChapterLens のアイコン →「音声から作る」で、音声から作れます(この PC のエンジンが要ります)。",
     timeout: "文字起こしを開けませんでした。ページを読み込み直して、もう一度お試しください。",
     empty: "文字起こしが空でした。",
   };
 
   async function run() {
     if (state.busy) return;
+    if (state.capture) { state.ui.setStatus("いま音声から作っています。止めるには、ツールバーのアイコンから「停止」を押してください。"); return; }
     const ui = state.ui;
     state.busy = true;
     ui.setBusy(true);
@@ -141,8 +154,78 @@
     video.addEventListener("timeupdate", updateCurrent);
   }
 
+  // ---- 音声から作る(CH2b)。取り込みは offscreen が行い、結果(チャンク内の相対時刻の字幕)がここへ届く ----
+  const fmt = (sec) => Core.formatTimestamp(Math.max(0, Math.floor(sec)));
+
+  function startCapture() {
+    const video = videoEl();
+    const map = new Capture.TimeMap();
+    const sample = (jump) => { const v = videoEl(); if (v) map.add(Date.now(), v.currentTime, { jump: !!jump }); };
+    const cap = { map, timer: null, listeners: [], video, language: null };
+    const on = (type, fn) => { if (video) { video.addEventListener(type, fn); cap.listeners.push([type, fn]); } };
+    on("timeupdate", () => sample(false));
+    for (const t of ["play", "playing", "pause", "ratechange"]) on(t, () => sample(false));
+    on("seeking", () => sample(true));
+    cap.timer = setInterval(() => sample(false), 1000);
+    sample(false);
+    state.capture = cap;
+    state.cues = [];
+    state.chapters = [];
+    state.duration = video && isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    state.videoId = currentVideoId();
+    clearMarkers();
+    state.ui.setChapters([], Core.formatTimestamp);
+    state.ui.setCanCopy(false);
+    state.ui.open();
+    state.ui.setStatus(`音声の取り込みを始めました(${video ? fmt(video.currentTime) : "0:00"} から)。再生すると、30 秒ごとに結果が増えます。`);
+  }
+
+  function stopCapture(notify) {
+    const cap = state.capture;
+    if (!cap) return;
+    clearInterval(cap.timer);
+    for (const [type, fn] of cap.listeners) cap.video.removeEventListener(type, fn);
+    state.capture = null;
+    if (notify) { try { chrome.runtime.sendMessage({ target: "background", type: "stop" }); } catch (_) { /* 送れなくても続ける */ } }
+  }
+
+  function addCues(newCues) {
+    if (newCues.length === 0) return;
+    const lo = Math.min(...newCues.map((c) => c.start)), hi = Math.max(...newCues.map((c) => c.end));
+    // 同じ範囲を聞き直したとき(シークして戻ったなど)は、新しい方で置き換える
+    state.cues = state.cues.filter((c) => c.end <= lo || c.start >= hi).concat(newCues).sort((a, b) => a.start - b.start);
+  }
+
+  const CAPTURE_ERRORS_STOP = new Set(["auth", "origin"]);
+  function onTabMessage(msg) {
+    if (!msg || typeof msg.type !== "string" || !msg.type.startsWith("cl-")) return;
+    if (msg.type === "cl-started") { if (isWatch()) startCapture(); return; }
+    const cap = state.capture;
+    if (!cap) return;
+    if (msg.type === "cl-cues") {
+      const shifted = Capture.shiftCues(msg.cues || [], msg.chunkWallMs, cap.map);
+      addCues(shifted);
+      cap.language = (msg.info && msg.info.language) || cap.language;
+      if (state.cues.length > 0) {
+        analyze();
+        const covered = Math.max(...state.cues.map((c) => c.end));
+        if (state.chapters.length > 1) state.ui.setStatus(`${state.chapters.length} 章(${fmt(covered)} まで・字幕 ${state.cues.length} 行・言語 ${cap.language || "?"})。再生を続けると増えます。位置は数秒ずれることがあります。`);
+      }
+    } else if (msg.type === "cl-status") {
+      if (state.cues.length === 0 && msg.info) state.ui.setStatus(`音声を聞いています…(処理済み ${fmt(msg.info.coveredS || 0)})。無音の間は飛ばします。`);
+    } else if (msg.type === "cl-error") {
+      state.ui.setStatus(msg.message || "音声の取り込みでエラーが起きました。", "error");
+      if (CAPTURE_ERRORS_STOP.has(msg.code)) stopCapture(true);
+    } else if (msg.type === "cl-ended") {
+      stopCapture(false);
+      if (state.cues.length > 0) { analyze(); state.ui.setRunLabel("目次を作る"); }
+      state.ui.setStatus(state.chapters.length > 1 ? `取り込みを止めました。${state.chapters.length} 章を作りました。` : "取り込みを止めました。");
+    }
+  }
+
   // ---- 動画が変わったら、前の動画の結果を捨てる ----
   function reset() {
+    if (state.capture) stopCapture(true);
     state.cues = null; state.chapters = []; state.duration = 0; state.videoId = currentVideoId();
     clearMarkers();
     if (!state.ui) return;
@@ -166,6 +249,7 @@
     state.ui.setGranularity(state.granularity);
     reset();
     document.addEventListener("yt-navigate-finish", onNavigate);
+    try { chrome.runtime.onMessage.addListener(onTabMessage); } catch (_) { /* 拡張の外では使わない */ }
     if (isWatch()) { state.ui.mount(); bindVideo(); }
   }
 

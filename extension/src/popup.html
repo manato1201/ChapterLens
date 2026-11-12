@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>ChapterLens</title>
+<style>
+  :root { color-scheme: light dark; --line: #8886; --accent: #0b57d0; }
+  body { margin: 0; padding: 12px; width: 320px; font: 13px/1.5 system-ui, "Yu Gothic UI", sans-serif; }
+  h1 { font-size: 14px; margin: 0 0 6px; }
+  p { margin: 4px 0 8px; }
+  .muted { opacity: .7; font-size: 12px; }
+  label { display: block; margin: 8px 0 2px; font-size: 12px; opacity: .8; }
+  input, select { width: 100%; box-sizing: border-box; padding: 4px 6px; font: inherit; }
+  button { margin-top: 10px; width: 100%; padding: 7px; font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); }
+  button.go { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button[disabled] { opacity: .5; cursor: default; }
+  #msg { min-height: 2.6em; margin-top: 8px; }
+  #msg.err { color: #b3261e; }
+  @media (prefers-color-scheme: dark) { #msg.err { color: #f2b8b5; } }
+</style>
+</head>
+<body>
+  <h1>ChapterLens — 音声から作る</h1>
+  <p class="muted">字幕(文字起こし)が無い動画用。再生中のタブの音を、<b>この PC の中のエンジン</b>(127.0.0.1)で文字にします。音はファイルに保存せず、外部にも送りません。</p>
+  <label for="url">エンジンの URL</label>
+  <input id="url" value="http://127.0.0.1:8787" autocomplete="off">
+  <label for="token">token(<code>~/.chapterlens/token</code> の中身)</label>
+  <input id="token" type="password" autocomplete="off" placeholder="エンジンを起動すると作られます">
+  <label for="lang">言語</label>
+  <select id="lang"><option value="auto">自動</option><option value="ja">日本語</option><option value="en">English</option></select>
+  <button id="go" class="go" type="button">この動画の音声から作る</button>
+  <button id="stop" type="button" hidden>停止</button>
+  <div id="msg" role="status" aria-live="polite"></div>
+  <script src="capture.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

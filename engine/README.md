@@ -24,7 +24,7 @@ uv run --extra asr python -m chapterlens serve --allow-origin chrome-extension:/
 - **単語の時刻で境界を寄せる**(`snap_to_utterances`): 検出した境界を、近く(±5 秒)の「発話の頭」(直前に 0.35 秒以上の間がある単語)へ動かす。
 - **修正の保存**(`corrections.py`): move / add / delete を SQLite に積む。元の検出は書き換えず、結果にだけ適用する。owner ごとに分ける(S-F)。`to_reference` で、評価データの `chapters.json` の形にできる(「直された動画を評価セットへ」)。
 - **サーバー**(`server.py`・標準ライブラリだけ): `/v1/health`・`/v1/detect`・`/v1/transcribe`・`/v1/corrections`。**守り**: 127.0.0.1 だけ・全呼び出しに token(Bearer。`~/.chapterlens/token`)・Host は 127.0.0.1/localhost だけ(DNS リバインディング対策)・ブラウザの Origin は `--allow-origin` で許可したものだけ・本文のサイズ上限(JSON 8MB・音声 300MB)・入力の検証・監査ログ(`~/.chapterlens/audit.log`。時刻・経路・結果・所要時間だけで、本文・音声・token は残さない)。
-- **設計書との違い**: 設計書は Native Messaging を第一候補にしていたが、CLI・他のツールからも同じ入口で呼べるよう、まず「localhost + token + Origin 検査」で作った。Native Messaging は、拡張側の読み込みと合わせて CH2b で検討する。
+- **設計書との違い**: 設計書は Native Messaging を第一候補にしていたが、CLI・他のツールからも同じ入口で呼べるよう、まず「localhost + token + Origin 検査」で作った。CH2b(拡張のタブ音声の取り込み)も、この localhost + token + Origin 検査の入口をそのまま使う(拡張の ID は固定で、`--allow-origin chrome-extension://egcgicajchobpecnggcblcbnoadlnfai`。手順は [../extension/README.md](../extension/README.md) の「音声から作る」)。Native Messaging は採らなかった。
 
 ### 実測(合成音声。Windows の音声合成で作った、正解の時刻が分かる音声)
 | | 英語(222 秒) | 日本語(212 秒) |

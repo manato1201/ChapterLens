@@ -1,10 +1,11 @@
 {
   "name": "chapterlens-extension",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "ChapterLens Chrome extension (CH1): chapter list on YouTube, built from the page transcript",
+  "description": "ChapterLens Chrome extension (CH1, CH2b): chapter list on YouTube, built from the page transcript or (for videos without one) from the tab audio via the local engine",
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
-    "parity:real": "node tools/parity_real.mjs"
+    "parity:real": "node tools/parity_real.mjs",
+    "e2e:audio": "node tools/e2e_audio.mjs"
   }
 }

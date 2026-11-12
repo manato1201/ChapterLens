@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -28,29 +29,61 @@ test("rowsFromPairs: 空白をつめ、時刻の読めない行・空の行は�
   assert.deepEqual(rows, [{ start: 1, text: "こんにちは 世界" }, { start: 9, text: "次の行" }]);
 });
 
-// ---- manifest(権限は最小・外部に出ない) ----
+// ---- manifest(権限は最小・外に出るのはこの PC の 127.0.0.1 だけ) ----
 const manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf-8"));
+const EXT_ID = "egcgicajchobpecnggcblcbnoadlnfai"; // README・エンジンの --allow-origin に書く、固定の拡張 ID
 
-test("manifest: MV3・権限は storage だけ・対象は YouTube だけ・host_permissions なし", () => {
+test("manifest: MV3・権限は4つだけ・host_permissions は 127.0.0.1 だけ・content script の対象は YouTube だけ", () => {
   assert.equal(manifest.manifest_version, 3);
-  assert.deepEqual(manifest.permissions, ["storage"]);
-  assert.equal(manifest.host_permissions, undefined);
-  assert.equal(manifest.background, undefined); // 常駐しない
+  assert.deepEqual([...manifest.permissions].sort(), ["activeTab", "offscreen", "storage", "tabCapture"]);
+  assert.deepEqual(manifest.host_permissions, ["http://127.0.0.1/*"]);
   assert.deepEqual(manifest.content_scripts.map((c) => c.matches), [["https://www.youtube.com/*"]]);
+  assert.equal(manifest.background.service_worker, "src/background.js");
+  assert.equal(manifest.action.default_popup, "src/popup.html");
 });
 
-test("manifest: 読み込む JS がすべて存在し、core が content より先", () => {
+test("manifest: key から作った拡張 ID が、文書の ID と一致する", () => {
+  const der = Buffer.from(manifest.key, "base64");
+  const hash = createHash("sha256").update(der).digest().subarray(0, 16);
+  const id = [...hash].map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15))).join("");
+  assert.equal(id, EXT_ID);
+  assert.ok(readFileSync(join(root, "README.md"), "utf-8").includes(EXT_ID), "README に拡張 ID がない");
+});
+
+test("manifest: 読み込む JS・HTML がすべて存在し、core が content より先", () => {
   const js = manifest.content_scripts[0].js;
-  for (const f of js) assert.ok(existsSync(join(root, f)), f);
+  for (const f of [...js, manifest.background.service_worker, manifest.action.default_popup, "src/offscreen.html", "src/offscreen.js", "src/pcm-worklet.js"]) assert.ok(existsSync(join(root, f)), f);
   assert.ok(js.indexOf("src/core.js") < js.indexOf("src/content.js"));
+  assert.ok(js.indexOf("src/capture.js") < js.indexOf("src/content.js"));
   assert.equal(js.at(-1), "src/content.js");
 });
 
-test("ソースにネットワーク送信・動的コード実行・HTML 文字列の挿入がない", () => {
-  for (const f of manifest.content_scripts[0].js) {
-    const src = readFileSync(join(root, f), "utf-8");
-    for (const bad of [/\bfetch\s*\(/, /XMLHttpRequest/, /sendBeacon/, /WebSocket/, /\beval\s*\(/, /new Function/, /\.innerHTML\s*=/, /insertAdjacentHTML/, /document\.write/]) {
-      assert.ok(!bad.test(src), `${f}: ${bad}`);
-    }
+const BAD_ALWAYS = [/XMLHttpRequest/, /sendBeacon/, /WebSocket/, /\beval\s*\(/, /new Function/, /\.innerHTML\s*=/, /insertAdjacentHTML/, /document\.write/, /importScripts/];
+
+test("ソース全体: 動的コード実行・HTML 文字列の挿入・WebSocket 等がない", () => {
+  for (const f of readdirSync(join(root, "src")).filter((n) => n.endsWith(".js"))) {
+    const src = readFileSync(join(root, "src", f), "utf-8");
+    for (const bad of BAD_ALWAYS) assert.ok(!bad.test(src), `${f}: ${bad}`);
+  }
+});
+
+test("通信: fetch は offscreen.js だけ(capture.js は渡された fetch を呼ぶだけ)。content script は何も送らない", () => {
+  for (const f of readdirSync(join(root, "src")).filter((n) => n.endsWith(".js"))) {
+    const src = readFileSync(join(root, "src", f), "utf-8");
+    const calls = src.match(/(?<![.\w])fetch\s*\(/g) || []; // 単独の fetch( だけ(this.d.fetch( は別)
+    if (f === "offscreen.js") assert.ok(calls.length >= 1);
+    else assert.equal(calls.length, 0, `${f} が fetch を直接呼んでいる`);
+  }
+  // 送り先の検査(127.0.0.1 だけ)を、送る前に必ず通している
+  const off = readFileSync(join(root, "src/offscreen.js"), "utf-8");
+  assert.ok(off.includes("validateServerUrl"));
+  assert.ok(readFileSync(join(root, "src/capture.js"), "utf-8").includes("this.base = validateServerUrl"));
+});
+
+test("外部の URL を読み込まない(HTML も)・HTML にインラインのスクリプトがない(CSP)", () => {
+  for (const f of ["popup.html", "offscreen.html"]) {
+    const html = readFileSync(join(root, "src", f), "utf-8");
+    assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>/i.test(html), `${f} にインラインの script`);
+    assert.ok(!/(?:src|href)\s*=\s*["']https?:/i.test(html), `${f} が外部を読み込む`);
   }
 });

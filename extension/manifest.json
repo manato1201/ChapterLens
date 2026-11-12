@@ -1,13 +1,37 @@
 {
   "manifest_version": 3,
   "name": "ChapterLens",
-  "version": "0.1.0",
-  "description": "YouTube の動画に、文字起こしの話題の切り替えから作った目次(チャプター)を重ねて表示します。処理はすべて拡張の中で行い、何も送信しません。",
-  "permissions": ["storage"],
+  "version": "0.2.0",
+  "description": "YouTube の動画に、話題の切り替えから作った目次(チャプター)を重ねて表示します。字幕があれば拡張の中だけで処理します。字幕が無い動画では、この PC の中のエンジン(127.0.0.1)だけに音声を渡して文字にします。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtTefXQBZIhhiuIwS/uAzRhPSIN9I3G/gaSmQXmPsscf1p+E6aXj3g1RSVqQedP1F2b+y9U+r6UQSh9XHws6vTyJBgtD4RZHJavuzS9UK0hzY3F2mYxUWS3XsebrEQTWmgmonFztG7qFh9OYU8XUy4GYl5HbxgES8NyPphZYW/HmBtJ/W1ulYzHCrRk5xrMIKHDzShOJ+c1HQ0LbMBGuZwAU7bAIlJi3yO/1XEjw2CF9LPHaIUFKHTnCFFn7hR9ckK70ixiBRcG4PK1UsgfUbJRf8coKipC4R+BXhCuUT+TVXwns3nw531uw7K1d2tcxyE8AwMu3KyEssshqbdB9NawIDAQAB",
+  "permissions": [
+    "storage",
+    "tabCapture",
+    "offscreen",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "action": {
+    "default_title": "ChapterLens: 音声から目次を作る",
+    "default_popup": "src/popup.html"
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*"],
-      "js": ["src/core.js", "src/transcript.js", "src/ui.js", "src/content.js"],
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "src/core.js",
+        "src/capture.js",
+        "src/transcript.js",
+        "src/ui.js",
+        "src/content.js"
+      ],
       "run_at": "document_idle"
     }
   ]
