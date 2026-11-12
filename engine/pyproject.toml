@@ -5,6 +5,11 @@ description = "ChapterLens engine: caption-based chapter detection and an evalua
 requires-python = ">=3.12"
 dependencies = []
 
+[project.optional-dependencies]
+asr = [
+    "faster-whisper>=1.1",
+]
+
 [dependency-groups]
 dev = ["pytest>=8"]
 

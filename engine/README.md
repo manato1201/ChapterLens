@@ -1,7 +1,7 @@
 # ChapterLens engine(CH0)
 
 字幕だけで話題の切り替えを検出し、**投稿者のチャプターを正解にして精度を測る**ための土台。設計は [../ChapterLens_DESIGN.md](../ChapterLens_DESIGN.md)。
-**状態**: CH0 のコードとテストは完了(46 件)。**実データ 39 本(日本語 21・英語 18)で評価・調整・交差検証を実施**(2026-11-12。下の「評価」)。既定は `topic-shift@2`。標準ライブラリだけで動く(依存なし)。
+**状態**: CH0(評価・検出器)は完了。**CH2 のエンジン側(ローカル ASR・修正の保存・HTTP サーバー)を実装**(2026-11-12。下の「CH2」)。テスト 90 件+実機 ASR の統合テスト 2 件。既定の検出器は `topic-shift@2`。標準ライブラリだけで動く(依存なし)。
 
 ## 使い方
 ```bash
@@ -12,6 +12,29 @@ uv run python -m chapterlens detect captions.vtt --target-count 8  # 境界の�
 uv run python -m chapterlens chapters description.txt --out chapters.json   # 概要欄 → 正解
 uv run python -m chapterlens eval dataset/ --out results/2026-11-12         # 評価(検出器 vs 基準)
 ```
+
+## CH2: ローカルエンジン(音声認識・修正の保存・サーバー)
+```bash
+uv sync --extra asr                                         # faster-whisper を入れる(任意の依存)
+uv run python -m chapterlens asr talk.wav --language ja --out talk.json    # 文字起こし(単語ごとの時刻つき)
+uv run python -m chapterlens audio talk.wav --out segments.json            # 音声 → ASR → 検出 → 発話の頭へ寄せる → 区間データ
+uv run --extra asr python -m chapterlens serve --allow-origin chrome-extension://<拡張の ID>   # HTTP サーバー(127.0.0.1:8787)
+```
+- **ASR**: faster-whisper(HuggingFace のローカルキャッシュの重みを使い、ネットワークに出ない)。GPU があれば使い、無ければ CPU(ただし CPU は実時間より遅い)。音声の読み込みは ffmpeg(WAV 16kHz モノラルは不要)。cuBLAS 12・cuDNN 9 の DLL は、CUDA 版 PyTorch が同梱するものを自動で探す(`CHAPTERLENS_CUDA_LIB_DIR` で指定もできる)。
+- **単語の時刻で境界を寄せる**(`snap_to_utterances`): 検出した境界を、近く(±5 秒)の「発話の頭」(直前に 0.35 秒以上の間がある単語)へ動かす。
+- **修正の保存**(`corrections.py`): move / add / delete を SQLite に積む。元の検出は書き換えず、結果にだけ適用する。owner ごとに分ける(S-F)。`to_reference` で、評価データの `chapters.json` の形にできる(「直された動画を評価セットへ」)。
+- **サーバー**(`server.py`・標準ライブラリだけ): `/v1/health`・`/v1/detect`・`/v1/transcribe`・`/v1/corrections`。**守り**: 127.0.0.1 だけ・全呼び出しに token(Bearer。`~/.chapterlens/token`)・Host は 127.0.0.1/localhost だけ(DNS リバインディング対策)・ブラウザの Origin は `--allow-origin` で許可したものだけ・本文のサイズ上限(JSON 8MB・音声 300MB)・入力の検証・監査ログ(`~/.chapterlens/audit.log`。時刻・経路・結果・所要時間だけで、本文・音声・token は残さない)。
+- **設計書との違い**: 設計書は Native Messaging を第一候補にしていたが、CLI・他のツールからも同じ入口で呼べるよう、まず「localhost + token + Origin 検査」で作った。Native Messaging は、拡張側の読み込みと合わせて CH2b で検討する。
+
+### 実測(合成音声。Windows の音声合成で作った、正解の時刻が分かる音声)
+| | 英語(222 秒) | 日本語(212 秒) |
+|---|---|---|
+| 処理時間(RTX 3070・small・float16) | 9.9 秒 | 7.7 秒 |
+| リアルタイム比 | 0.04(実時間の約 25 倍速) | 0.04 |
+| 発話の始まりの時刻のずれ(絶対値の中央値 / 最大) | **0.12 秒 / 0.27 秒** | **0.04 秒 / 0.16 秒** |
+- 設計 CH2 の基準(中央値 1.0 秒以内・仮)を、大きく下回る。CH0 の字幕(1 秒刻み・数秒のかたまり)の ±3 秒の F1 が 0.1 前後だった部分を、ここで伸ばせる見込み。
+- **正直な限界**: ①音声は**合成音声**(静かで明瞭)。実際の動画(BGM・複数人・雑音)の精度ではない。②他人の動画の音声は、方針(設計書 §2)により取得しないので、**実データでの ±3 秒の F1 は測れていない**。自分の動画・許諾済みの素材でないと測れない。③検出器 v2 の最小間隔(60 秒)は、3 分半の短い音声には長すぎる(話題が 55 秒の合成音声では、境界が減る)。
+- テスト音声: `uv run python tools/make_tts_fixture.py all`(Windows)→ `results/tts/`。確認: `uv run --extra asr python tools/asr_check.py all`・`CHAPTERLENS_ASR_TESTS=1 uv run --extra asr pytest tests/test_asr_integration.py`。
 
 ## 評価データの置き方(`dataset/`。git に入れない・公開しない)
 動画 1 本 = 1 フォルダ。**動画・音声は置かない**(字幕のテキストと正解の時刻だけ)。

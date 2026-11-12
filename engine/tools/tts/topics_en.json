@@ -1,0 +1,22 @@
+{
+  "voice": "Microsoft Zira Desktop",
+  "language": "en",
+  "topics": [
+    {
+      "name": "coffee",
+      "text": "Let's talk about coffee roasting. Green coffee beans are heated in a rotating drum, and around two hundred degrees they turn brown as the sugars caramelize. The first crack is a loud popping sound that happens when moisture escapes from the bean. Light roasts keep the fruity acidity of the origin, while dark roasts taste bitter and smoky. Roasters watch the temperature curve very carefully, because a few seconds can make a big difference in flavor. After roasting, the beans must rest for a few days so the carbon dioxide can escape before brewing. Grinding fresh beans just before brewing preserves the aroma, and the water temperature should stay slightly below boiling. A pour over kettle gives the barista control over the flow, and the bloom of fresh grounds shows how recently the coffee was roasted. Espresso uses high pressure to extract a concentrated shot with a thick layer of crema on top."
+    },
+    {
+      "name": "volcano",
+      "text": "Now let's switch to volcanoes. A volcano forms where magma rises through cracks in the earth's crust. Pressure builds inside the magma chamber, and gases dissolved in the molten rock expand until the eruption begins. Basalt lava flows are fluid and travel far, while viscous rhyolite lava traps gas and causes explosive blasts. Geologists monitor earthquakes, ground swelling, and sulfur dioxide emissions to forecast eruptions near the crater. Ash clouds can rise many kilometers into the atmosphere and disrupt airplane routes for days. Pyroclastic flows are fast avalanches of hot gas and rock that destroy everything on the slope. After an eruption the volcanic soil becomes very fertile, which is why farmers return to plant vineyards and rice near the mountain. Some islands, such as Hawaii, were built entirely by repeated lava eruptions over millions of years."
+    },
+    {
+      "name": "chess",
+      "text": "The next topic is chess strategy. In the opening you should control the center, develop your knights and bishops, and castle your king to safety. During the middlegame, look for tactical forks, pins, and discovered attacks against the opponent's queen. A good player also counts material, so a rook is worth about five pawns, and a bishop is worth about three. In the endgame the king becomes an active piece, and passed pawns can decide the whole game. Grandmasters study thousands of positions to recognize these patterns quickly, and they use opening databases to prepare novelty moves before a tournament. Time pressure matters too, because a clock with only a few seconds left leads to blunders. Many beginners improve fastest by solving tactical puzzles every day and reviewing their lost games with an engine."
+    },
+    {
+      "name": "birds",
+      "text": "Finally, let's discuss bird migration. Every autumn, millions of geese and swallows fly south along ancient flyways. They navigate using the sun, the stars, and the magnetic field of the earth. Before the journey they gain a lot of fat as fuel, and flocks take turns leading in a V formation to save energy. Wetlands along the route serve as important resting stops, and ornithologists track the birds with tiny satellite tags attached to their legs. Some arctic terns travel from the north pole to the south pole every year, which is the longest migration of any animal. Storms and city lights can confuse the travelers, so volunteers count the birds at observation stations along the coast. Protecting marshes and lakes helps the flocks survive the long trip, and it keeps the spring return a reliable sign of the season."
+    }
+  ]
+}
