@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "ChapterLens",
+  "version": "0.1.0",
+  "description": "YouTube の動画に、文字起こしの話題の切り替えから作った目次(チャプター)を重ねて表示します。処理はすべて拡張の中で行い、何も送信しません。",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["src/core.js", "src/transcript.js", "src/ui.js", "src/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
