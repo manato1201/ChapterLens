@@ -1,5 +1,6 @@
 """CH5: ライブ(/v1/live)を、実際の HTTP で確かめる。"""
 
+import pytest
 from conftest import ADMIN, add_user, env  # noqa: F401
 from synth import make_video
 
@@ -122,3 +123,16 @@ def test_concurrent_pushes_to_different_sessions_do_not_mix(env):
     for t in threads:
         t.join()
     assert results["a"] == results["b"] and len(results["a"]) == 1 and abs(results["a"][0][1] - ref[0]) <= 4
+
+
+def test_oldest_session_is_evicted_even_when_the_clock_does_not_advance():
+    from chapterlens.live_sessions import MAX_SESSIONS_PER_USER, LiveSessionError, LiveSessions
+
+    sessions = LiveSessions(clock=lambda: 100.0)  # 時計が進まない(分解能が粗い環境の再現)
+    ids = [sessions.push("u", None, [], None)[0] for _ in range(MAX_SESSIONS_PER_USER)]
+    sessions.push("u", ids[0], [], None)                       # 一番古かった ids[0] を使う → ids[1] が一番古くなる
+    newest = sessions.push("u", None, [], None)[0]             # 上限なので、一番古い ids[1] が捨てられる
+    with pytest.raises(LiveSessionError):
+        sessions.push("u", ids[1], [], None)
+    for alive in (ids[0], ids[2], newest):
+        sessions.push("u", alive, [], None)

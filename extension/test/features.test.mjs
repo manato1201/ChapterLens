@@ -501,3 +501,34 @@ test("ライブ: 範囲外の印は章にせず、「仮」の番号を章の番
   assert.deepEqual(page.ui.chapters.at(-1).map((c) => c.start), [0, 12]);
   assert.deepEqual(page.ui.chapterOpts.at(-1).tentative, [1]);
 });
+
+test("共有: エンジンの応答の形が想定と違っても、画面が止まらずエラーを出す", async () => {
+  const page = await readyPage({ engine: () => ({ ok: true, status: 200, data: null }) });
+  await page.handlers.onShareRefresh();
+  const v = page.ui.share.at(-1);
+  assert.equal(v.error, true);
+  assert.match(v.note, /想定と違います/);
+});
+
+test("ライブ: エンジンの応答の形が想定と違っても、例外にせず、画面にエラーを出す", async () => {
+  const page = await livePage(() => ({ ok: true, status: 200, data: null }));
+  page.play(30);
+  page.msg({ type: "cl-cues", cues: [{ start: 1, end: 5, text: "ギターの話" }], chunkWallMs: page.clock.t - 30_000, info: {} });
+  await flush();
+  assert.equal(page.ui.status.at(-1).kind, "error");
+  page.play(30);
+  page.msg({ type: "cl-cues", cues: [{ start: 2, end: 6, text: "ギターの弦" }], chunkWallMs: page.clock.t - 30_000, info: {} });
+  await flush(); // 2 回目も処理できる(busy のまま固まらない)
+  assert.equal(page.ui.status.at(-1).kind, "error");
+});
+
+test("ダイジェスト: 割合の選択は、別の動画へ移ると既定(20%)に戻る", async () => {
+  const page = await readyPage();
+  page.handlers.onDigestRatio(0.3);
+  page.navigate("vid2");
+  assert.equal(page.ui.digest.at(-1).supported, false);
+  page.navigate("vid3");
+  await page.handlers.onRun();
+  await flush();
+  assert.equal(page.ui.digest.at(-1).ratio, 0.2);
+});

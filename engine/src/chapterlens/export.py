@@ -199,12 +199,19 @@ def _tool(name: str) -> str:
     return found
 
 
+def _run(args: list[str], *, timeout_s: int, cwd: str | None = None) -> subprocess.CompletedProcess:
+    """ffmpeg / ffprobe を、シェルを通さずに実行する。時間切れ・起動の失敗は ExportError にする。"""
+    try:
+        return subprocess.run(args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        raise ExportError(f"{Path(args[0]).stem} が {timeout_s} 秒で終わりませんでした(動画が長すぎるか、止まっています)") from None
+    except OSError as e:
+        raise ExportError(f"{Path(args[0]).stem} を起動できません: {e}") from None
+
+
 def probe(path: Path) -> dict:
     """ffprobe で、長さ・映像と音声の有無・大きさを読む。"""
-    res = subprocess.run(
-        [_tool("ffprobe"), "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)],
-        capture_output=True, text=True, timeout=60,
-    )
+    res = _run([_tool("ffprobe"), "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)], timeout_s=60)
     if res.returncode != 0:
         raise ExportError("動画を読めません: " + res.stderr.strip()[-300:])
     info = json.loads(res.stdout)
@@ -244,7 +251,7 @@ def render(input_path: Path, output_path: Path, spans: list[dict], cues: list[Cu
         flt, labels = build_filter(spans, has_audio=info["has_audio"], vertical=vertical, subtitles=sub_name, font=font)
         args = ffmpeg_args(str(Path(input_path).resolve()), str(out.resolve()), flt, labels)
         args[0] = _tool("ffmpeg")
-        res = subprocess.run(args, cwd=tmp, capture_output=True, text=True, timeout=timeout_s)
+        res = _run(args, cwd=tmp, timeout_s=timeout_s)
     if res.returncode != 0:
         raise ExportError("ffmpeg が失敗しました: " + res.stderr.strip()[-600:])
     return {"output": str(out), "spans": len(spans), "seconds": round(sum(s["end_s"] - s["start_s"] for s in spans), 2),

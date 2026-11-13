@@ -117,3 +117,16 @@ test("describeError: 原因ごとに、次にすることが分かる説明", ()
   assert.equal(describeError({ ok: false, status: 403, error: "共有は、管理者が無効にしています" }), "共有は、管理者が無効にしています");
   assert.equal(describeError({ ok: true }), "");
 });
+
+test("store: 章の調整とダイジェストの保存が同時に走っても、どちらも失われない", async () => {
+  const s = Store.create(memoryArea());
+  await Promise.all([
+    s.saveManual("v1", [100], [90]),
+    s.saveDigest("v1", [{ start: 5, end: 20 }], [], 0.2),
+    s.saveManual("v2", [50], [50]),
+  ]);
+  const got = await s.load("v1");
+  assert.deepEqual(got.manual.boundaries, [100]);
+  assert.deepEqual(got.digest.spans, [{ start: 5, end: 20 }]);
+  assert.ok((await s.load("v2")).manual);
+});

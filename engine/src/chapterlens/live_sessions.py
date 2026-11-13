@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import itertools
 import secrets
 import threading
 import time
@@ -29,7 +30,8 @@ class LiveSessions:
         self._clock = clock
         self._params = params
         self._lock = threading.Lock()  # 一覧の出し入れだけ。重い検出はセッションごとのロックで(他の人を待たせない)
-        self._items: dict[tuple[str, str], dict] = {}  # (owner, id) → {det, used, lock}
+        self._items: dict[tuple[str, str], dict] = {}  # (owner, id) → {det, used, seq, lock}
+        self._seq = itertools.count()  # 使われた順の連番(時計の分解能が粗くても、「一番古い」が一意に決まる)
 
     def _sweep(self) -> None:
         now = self._clock()
@@ -42,16 +44,17 @@ class LiveSessions:
             self._sweep()
             created = False
             if session_id is None:
-                mine = sorted((v["used"], k) for k, v in self._items.items() if k[0] == owner)
+                mine = sorted((v["seq"], k) for k, v in self._items.items() if k[0] == owner)
                 while len(mine) >= MAX_SESSIONS_PER_USER:  # 一番古いものを捨てる
                     del self._items[mine.pop(0)[1]]
                 session_id = secrets.token_hex(8)
-                self._items[(owner, session_id)] = {"det": LiveDetector(self._params), "used": self._clock(), "lock": threading.Lock()}
+                self._items[(owner, session_id)] = {"det": LiveDetector(self._params), "used": self._clock(), "seq": next(self._seq), "lock": threading.Lock()}
                 created = True
             item = self._items.get((owner, session_id))
             if item is None:
                 raise LiveSessionError("セッションがありません(期限切れか、他の利用者のものです)")
             item["used"] = self._clock()
+            item["seq"] = next(self._seq)
         det: LiveDetector = item["det"]
         with item["lock"]:  # 同じセッションへの同時の push だけを順番にする
             det.push(cues, now_s=now_s)

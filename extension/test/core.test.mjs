@@ -200,3 +200,12 @@ test("removeBoundary / moveBoundary / addBoundary: 5 秒の最小間隔を守り
   assert.equal(core.addBoundary(list, NaN, 600), null);
   assert.deepEqual(list, [100, 200, 300]);                                  // 元は変わらない
 });
+
+test("selectDigest: 3 時間・章の境界なしでも、数秒以内(章の「自分以外」を毎回作り直さない)", () => {
+  const long = [];
+  for (let t = 0; t < 10800; t += 4) long.push({ start: t, end: t + 4, text: `topic${t % 97}alpha topic${t % 89}beta word${t}gamma` });
+  const t0 = Date.now();
+  const spans = core.selectDigest(long, [], 10800);
+  assert.ok(spans.length > 0);
+  assert.ok(Date.now() - t0 < 5000, `${Date.now() - t0}ms`);
+});

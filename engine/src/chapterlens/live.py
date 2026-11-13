@@ -42,10 +42,12 @@ STEP_S = 30.0  # push が長い時間ぶんを一度に受けたとき、これ�
 
 
 class _C:
-    __slots__ = ("start", "end", "text", "counts")
+    """字幕 1 つぶん。本文は持たず、語の数え上げだけを残す(本文をメモリに置いておく理由がない)。"""
+
+    __slots__ = ("start", "end", "counts")
 
     def __init__(self, cue: Cue) -> None:
-        self.start, self.end, self.text = cue.start_s, cue.end_s, cue.text
+        self.start, self.end = cue.start_s, cue.end_s
         self.counts = term_counts(cue.text)
 
 
@@ -71,7 +73,8 @@ class LiveDetector:
         self.now_s = 0.0
         self.committed: list[dict] = []  # {t, score, tentative_at, committed_at, tentative_t}
         self.pending: dict | None = None  # {t, score, tentative_at}
-        self.dismissed: list[float] = []
+        self.dismissed: list[float] = []  # 取り下げた位置(探す範囲より古いものは捨てる)
+        self.n_dismissed = 0  # 取り下げた総数(評価・表示用)
         self.dropped = 0  # 上限で捨てた字幕の数
 
     # ---- 入力 ----
@@ -132,6 +135,9 @@ class LiveDetector:
         return self.committed[-1]["t"] if self.committed else 0.0
 
     def _advance(self) -> None:
+        cutoff = self.now_s - self.p.horizon_s - self.p.dismiss_radius_s  # これより古い位置は、もう探さないので覚えておく必要がない
+        if self.dismissed and self.dismissed[0] < cutoff:
+            self.dismissed = [d for d in self.dismissed if d >= cutoff]
         for _ in range(8):
             if self.pending is not None:
                 if self.now_s - self.pending["t"] < self.p.commit_s:
@@ -182,6 +188,7 @@ class LiveDetector:
         self.pending = None
         if best is None or best[0] > p.commit_sim:
             self.dismissed.append(pend["t"])  # 脱線だった。この付近は、もう印を打たない
+            self.n_dismissed += 1
             return
         self.committed.append({
             "t": round(best[2], 3), "score": round(min(1.0, 1.0 - best[0]), 3),

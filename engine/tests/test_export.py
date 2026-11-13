@@ -230,3 +230,20 @@ def test_render_refuses_to_overwrite_unless_asked(sample_video, tmp_path):
     assert out.read_bytes() == b"precious"
     render(sample_video, out, [S(0, 5)], [], burn_subtitles=False, overwrite=True)
     assert out.stat().st_size > 1000
+
+
+def test_ffmpeg_timeouts_and_launch_failures_become_explained_errors(monkeypatch):
+    from chapterlens import export
+
+    def boom_timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=1)
+
+    def boom_os(*a, **k):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(export.subprocess, "run", boom_timeout)
+    with pytest.raises(ExportError, match="終わりませんでした"):
+        export._run(["/x/ffmpeg"], timeout_s=1)
+    monkeypatch.setattr(export.subprocess, "run", boom_os)
+    with pytest.raises(ExportError, match="起動できません"):
+        export._run(["/x/ffmpeg"], timeout_s=1)

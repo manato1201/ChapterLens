@@ -173,3 +173,18 @@ test("ui: マウントとテーマ — mount で文書に付き、unmount で外
   p.api.open();
   assert.ok(p.shadow.all((n) => n.className.split(" ").includes("wrap"))[0].className.includes("dark"));
 });
+
+test("ui: 共有の入力(共有先・題名のチェック)は、「重ねる」などの再描画で消えない", () => {
+  const p = panel();
+  const shares = [{ from: "bob", count: 3, mine: false, overlay: false }];
+  p.api.setShare({ note: "x", canPublish: true, mode: "team", mine: false, shares });
+  let [audience, titles] = view(p, "共有").all((n) => n.tagName === "INPUT");
+  audience.value = "u_bbbbbbbb";
+  audience.dispatch("input");
+  titles.checked = true;
+  titles.dispatch("change");
+  p.api.setShare({ note: "y", canPublish: true, mode: "team", mine: false, shares: [{ ...shares[0], overlay: true }] }); // 再描画
+  [audience, titles] = view(p, "共有").all((n) => n.tagName === "INPUT");
+  assert.equal(audience.value, "u_bbbbbbbb");
+  assert.equal(titles.checked, true);
+});

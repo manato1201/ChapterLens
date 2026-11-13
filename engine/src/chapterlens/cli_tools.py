@@ -83,7 +83,7 @@ def _cmd_live(args: argparse.Namespace) -> int:
         print(f"確定 t={m['t']:.1f}s  暫定が出た {m['tentative_at']:.1f}s  確定した {m['committed_at']:.1f}s  (信頼度 {m['score']})")
     if det.pending:
         print(f"暫定 t={det.pending['t']:.1f}s(まだ確定していない)")
-    print(f"確定 {len(det.committed)} 件・取り下げ {len(det.dismissed)} 件", file=sys.stderr)
+    print(f"確定 {len(det.committed)} 件・取り下げ {det.n_dismissed} 件", file=sys.stderr)
     return 0
 
 

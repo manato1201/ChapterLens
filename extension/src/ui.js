@@ -176,12 +176,15 @@
     }
 
     // ---- 共有の描画 ----
+    const shareForm = { audience: "", titles: false }; // 「重ねる」などで再描画しても、入力中の内容を失わない
     function renderShare(v) {
       shareView.replaceChildren();
       shareView.append(h(doc, "div", { class: "status" + (v.error ? " error" : ""), text: v.note || "" }));
       if (v.canPublish) {
-        const audience = h(doc, "input", { type: "text", "aria-label": "共有先の利用者 ID", placeholder: v.mode === "named" ? "共有先の ID(例 u_1a2b3c4d,u_5e6f7a8b)" : "空 = 全員 / ID をカンマ区切り", ".value": "" });
-        const titles = h(doc, "input", { type: "checkbox", "aria-label": "題名も共有する" });
+        const audience = h(doc, "input", { type: "text", "aria-label": "共有先の利用者 ID", placeholder: v.mode === "named" ? "共有先の ID(例 u_1a2b3c4d,u_5e6f7a8b)" : "空 = 全員 / ID をカンマ区切り", ".value": shareForm.audience });
+        const titles = h(doc, "input", { type: "checkbox", "aria-label": "題名も共有する", ".checked": shareForm.titles });
+        audience.addEventListener("input", () => { shareForm.audience = audience.value; });
+        titles.addEventListener("change", () => { shareForm.titles = !!titles.checked; });
         shareView.append(h(doc, "div", { class: "section" }, [
           h(doc, "div", { class: "field" }, [audience]),
           h(doc, "label", { class: "check" }, [titles, h(doc, "span", { text: "題名(字幕の冒頭 24 文字)も共有する。既定は区間の時刻だけ" })]),

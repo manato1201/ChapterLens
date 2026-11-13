@@ -109,3 +109,13 @@ def test_dense_cues_are_capped_so_one_burst_cannot_blow_up_the_work():
     ok = LiveDetector()
     ok.push([Cue(float(t), float(t + 4), f"alpha{t} beta{t}") for t in range(0, 400, 4)])
     assert ok.dropped == 0
+
+
+def test_old_dismissals_are_forgotten_but_still_counted_and_cues_keep_no_text():
+    det = LiveDetector()
+    det.dismissed = [10.0, 20.0]
+    det.n_dismissed = 2
+    det.push([], now_s=1000.0)  # 探す範囲(180 秒)+取り下げの半径より、ずっと先へ進む
+    assert det.dismissed == [] and det.n_dismissed == 2
+    det.push([Cue(1001.0, 1005.0, "secretword alpha beta")])
+    assert not hasattr(det._cues[0], "text") and "secretword" in det._cues[0].counts

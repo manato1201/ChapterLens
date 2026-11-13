@@ -23,6 +23,7 @@
 
   const PREF_KEY = "chapterlens.granularity";
   const DIGEST_MIN_S = 60; // ダイジェストを作れる最小の長さ
+  const DIGEST_RATIO = 0.2; // ダイジェストの長さの既定の割合
   const NEW_SPAN_S = 15; // 「いまの位置から足す」区間の長さ
   const state = {
     videoId: null, cues: null, duration: 0, granularity: "standard", busy: false, ui: null, boundAt: null, capture: null,
@@ -61,10 +62,9 @@
 
   // ---- プログレスバーの目印(失敗しても目次は使える) ----
   function clearMarkers() { document.querySelectorAll(".chapterlens-ticks").forEach((n) => n.remove()); }
-  function tick(percent, color, title, hollow) {
+  function tick(percent, color, title) {
     const t = document.createElement("div");
-    t.style.cssText = `position:absolute;top:-2px;bottom:-2px;width:3px;margin-left:-1px;left:${percent.toFixed(3)}%;` +
-      (hollow ? `border:1px solid ${color};` : `background:${color};`);
+    t.style.cssText = `position:absolute;top:-2px;bottom:-2px;width:3px;margin-left:-1px;left:${percent.toFixed(3)}%;background:${color};`;
     if (title) t.title = title;
     return t;
   }
@@ -405,6 +405,11 @@
     drawMarkers();
   }
 
+  // エンジンの応答が想定と違っても(data が無い等)、画面が「問い合わせています…」のまま止まらないようにする
+  const guardShare = (fn) => async (...args) => {
+    try { await fn(...args); } catch (_) { showShare("共有の処理でエラーが起きました(エンジンの応答が想定と違います)。", true); }
+  };
+
   async function sharePublish(opts) {
     if (!state.cues || state.chapters.length < 2) { say("共有できる章がありません。", "error"); return; }
     const ids = String(opts.audience || "").split(/[\s,、]+/).filter(Boolean);
@@ -517,6 +522,8 @@
         L.markers = res.data.markers || [];
       }
       applyLiveMarkers();
+    } catch (_) { // 応答の形が想定と違うなど。字幕の取り込みは続ける
+      if (state.live === L) { say("ライブの処理でエラーが起きました(エンジンの応答が想定と違います)。", "error"); L.queue = []; }
     } finally { L.busy = false; }
   }
 
@@ -575,7 +582,7 @@
     setDigestEnabled(false);
     state.cues = null; state.auto = []; state.manual = null; state.chapters = []; state.tentative = []; state.duration = 0;
     state.videoId = currentVideoId();
-    state.digest.auto = []; state.digest.custom = null;
+    state.digest.auto = []; state.digest.custom = null; state.digest.ratio = DIGEST_RATIO;
     state.share = { info: null, list: [], overlay: new Set(), mineOff: false };
     clearMarkers();
     if (!state.ui) return;
@@ -601,8 +608,9 @@
       onRun: run, onGranularity: setGranularity, onSeek: seek, onCopy: copy,
       onChapterRemove: chapterRemove, onChapterNudge: chapterNudge, onChapterAdd: chapterAdd, onManualReset: manualReset,
       onDigestToggle: setDigestEnabled, onDigestRatio: digestRatio, onSpanToggle: spanToggle, onSpanAdd: spanAdd, onDigestReset: digestReset,
-      onShareRefresh: refreshShare, onSharePublish: sharePublish, onShareRevoke: shareRevoke, onShareOverlay: shareOverlay, onShareAdopt: shareAdopt,
-      onTab: (name) => { if (name === "share") refreshShare(); else if (name === "digest") renderDigest(); },
+      onShareRefresh: guardShare(refreshShare), onSharePublish: guardShare(sharePublish), onShareRevoke: guardShare(shareRevoke),
+      onShareOverlay: shareOverlay, onShareAdopt: shareAdopt,
+      onTab: (name) => { if (name === "share") guardShare(refreshShare)(); else if (name === "digest") renderDigest(); },
     });
     state.ui.setGranularity(state.granularity);
     reset();

@@ -96,18 +96,24 @@
       }
     }
 
-    async function write(videoId, patch) {
-      if (!VIDEO_ID.test(videoId || "")) return false;
-      const cur = await read(videoId);
-      const next = Object.assign({}, cur, patch);
-      for (const k of Object.keys(next)) if (next[k] === null) delete next[k];
-      try {
-        await area.set({ [PREFIX + videoId]: next });
-        await touch(videoId);
-        return true;
-      } catch (_) {
-        return false;
-      }
+    // 読んでから書く(read-modify-write)ので、同時に走ると片方の変更が消える。順番に実行する
+    let chain = Promise.resolve();
+    function write(videoId, patch) {
+      if (!VIDEO_ID.test(videoId || "")) return Promise.resolve(false);
+      const job = chain.then(async () => {
+        const cur = await read(videoId);
+        const next = Object.assign({}, cur, patch);
+        for (const k of Object.keys(next)) if (next[k] === null) delete next[k];
+        try {
+          await area.set({ [PREFIX + videoId]: next });
+          await touch(videoId);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      });
+      chain = job.then(() => undefined, () => undefined);
+      return job;
     }
 
     return {

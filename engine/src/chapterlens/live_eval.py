@@ -36,7 +36,7 @@ def evaluate_live(videos: list[dict], params: LiveParams | None = None) -> dict:
         det = replay(v["cues"], params)
         pred = [m["t"] for m in det.committed]
         committed += len(pred)
-        dismissed += len(det.dismissed)
+        dismissed += det.n_dismissed
         k = max(0, round(v["duration_s"] / 220.0) - 1)
         batch = get_detector("topic-shift@2").detect(v["cues"], v["duration_s"], target_count=k).boundaries
         for tol in TOLERANCES:
@@ -48,7 +48,7 @@ def evaluate_live(videos: list[dict], params: LiveParams | None = None) -> dict:
                 seen_lag.append(m["tentative_at"] - m["t"])
                 commit_lag.append(m["committed_at"] - m["t"])
         per_video.append({"id": v["id"], "n_ref": len(v["ref"]), "n_live": len(pred), "n_batch": len(batch),
-                          "dismissed": len(det.dismissed)})
+                          "dismissed": det.n_dismissed})
     return {
         "videos": len(videos),
         "params": (params or LiveParams()).__dict__,
