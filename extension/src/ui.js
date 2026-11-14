@@ -123,6 +123,25 @@
     .wrap.docked .view { max-height: 70vh; }
     .edit { opacity: 0; transition: opacity .12s; }
     li.row:hover .edit, li.row:focus-within .edit, li.current .edit { opacity: 1; }
+    /* ---- ちいさな遊び: 触れたとき・現れたときの「1 回きり」の動きだけ(無限には動かさない)。動かすのは transform と opacity ---- */
+    @media (prefers-reduced-motion: no-preference) {
+      /* 章が見つかると、上から順に、ふわっと現れる(最初の 8 つまで。残りは待たせない) */
+      .chapters.enter li.row { animation: cl-rise .28s cubic-bezier(.16,1,.3,1) both; }
+      .chapters.enter li.row:nth-child(2) { animation-delay: 40ms; } .chapters.enter li.row:nth-child(3) { animation-delay: 80ms; } .chapters.enter li.row:nth-child(4) { animation-delay: 120ms; }
+      .chapters.enter li.row:nth-child(5) { animation-delay: 160ms; } .chapters.enter li.row:nth-child(6) { animation-delay: 200ms; } .chapters.enter li.row:nth-child(7) { animation-delay: 240ms; }
+      .chapters.enter li.row:nth-child(n+8) { animation-delay: 280ms; }
+      /* 押せるものは、触れると少し浮き、押すと沈む */
+      .primary, .secondary, .launcher, .tab, .seg, .toggle, .bar button, .export button { transition: transform .12s cubic-bezier(.4,0,.2,1); }
+      .primary:hover:not([disabled]), .secondary:hover:not([disabled]), .launcher:hover, .bar button:hover:not([disabled]) { transform: translateY(-1px); }
+      .primary:active:not([disabled]), .secondary:active:not([disabled]), .launcher:active, .tab:active, .seg:active, .toggle:active, .bar button:active { transform: scale(.97); }
+      /* 時刻の札は、触れると、ぴょんと跳ねる */
+      li.row:hover .time { animation: cl-hop .24s cubic-bezier(.16,1,.3,1); }
+      /* エンジンにつながったら、緑の点が 1 回だけ広がる */
+      .dot.ok { animation: cl-ping .6s cubic-bezier(.16,1,.3,1); }
+    }
+    @keyframes cl-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    @keyframes cl-hop { 0% { transform: none; } 40% { transform: translateY(-2px) scale(1.06); } 100% { transform: none; } }
+    @keyframes cl-ping { 0% { transform: scale(.4); opacity: .4; } 60% { transform: scale(1.35); opacity: 1; } 100% { transform: scale(1); } }
   `;
 
   function h(doc, tag, props, children) {
@@ -160,6 +179,7 @@
     const status = h(doc, "div", { class: "status", role: "status", "aria-live": "polite" });
     const runBtn = h(doc, "button", { class: "primary", type: "button", text: "目次を作る", onclick: () => call("onRun") });
     const list = h(doc, "ol", { class: "chapters", "aria-label": "章の一覧" });
+    let listHadRows = false;
     const engineDot = h(doc, "span", { class: "dot" });
     const engineText = h(doc, "span", { text: "エンジン: 確認中…" });
     const setupLink = h(doc, "button", { class: "link", type: "button", text: "設定", onclick: () => call("onOpenSetup") });
@@ -345,6 +365,9 @@
       setChapters(chapters, formatTime, opts) {
         const o = opts || {};
         const tent = new Set(o.tentative || []);
+        // 章が「無いところから、できた」とき(最初の 1 回)だけ、現れる動きを付ける。30 秒ごとの更新では、動かさない
+        list.className = "chapters" + (!listHadRows && chapters.length ? " enter" : "");
+        listHadRows = chapters.length > 0;
         list.replaceChildren();
         chapters.forEach((c, i) => {
           const row = h(doc, "li", { class: "row", "data-index": String(i) }, [
