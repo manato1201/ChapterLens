@@ -829,7 +829,7 @@
     reset();
     document.addEventListener("yt-navigate-finish", onNavigate);
     document.addEventListener("keydown", onKey);
-    if (chrome.runtime && typeof chrome.runtime.getManifest === "function") watchEngine(); // 本物の拡張の中だけ(状態の表示のための確認)
+    if (chrome.runtime && typeof chrome.runtime.getManifest === "function") { watchEngine(); document.addEventListener("visibilitychange", () => { if (!document.hidden && isWatch()) refreshEngine(); }); } // 本物の拡張の中だけ。設定のタブから戻ったときも、すぐ状態を確かめ直す
     try { chrome.runtime.onMessage.addListener(onTabMessage); } catch (_) { /* 拡張の外では使わない */ }
     if (isWatch()) { state.ui.mount(); bindVideo(); }
   }

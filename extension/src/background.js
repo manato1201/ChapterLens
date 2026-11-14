@@ -120,7 +120,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === "open-setup") {
-    if (sender && sender.id === chrome.runtime.id) chrome.tabs.create({ url: chrome.runtime.getURL("src/popup.html") }).catch(() => {});
+    if (sender && sender.id === chrome.runtime.id) chrome.tabs.create({ url: chrome.runtime.getURL("src/popup.html?setup=1") }).catch(() => {});
     return;
   }
   if (msg.type === "engine") {

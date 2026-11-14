@@ -36,7 +36,23 @@
 
   function show(active) { $("go").hidden = active; $("stop").hidden = !active; for (const id of ["url", "token", "lang"]) $(id).disabled = active; }
 
+  // 「設定」から開いたとき(?setup=1・別のタブ): 動画のタブではないので、始めるボタンは出さず、保存と接続の確認だけを行う
+  const SETUP = new URLSearchParams(location.search).get("setup") === "1";
+
+  async function saveSettings() {
+    const serverUrl = C.validateServerUrl($("url").value.trim());
+    const token = $("token").value.trim();
+    if (!token) throw new Error("token を入力してください。");
+    await chrome.storage.local.set({ [KEY]: { url: serverUrl, token, language: $("lang").value } });
+    return serverUrl;
+  }
+
   async function init() {
+    if (SETUP) {
+      $("go").hidden = true; $("stop").hidden = true; $("admin").hidden = true; $("save").hidden = false;
+      $("steps").replaceChildren();
+      for (const t of ["この PC でエンジンを起動する(uv run python -m chapterlens serve)", "下に URL と token を入れて、保存する(初回だけ)", "YouTube の動画のタブへ戻り、パネルの「音声から作る」を押す"]) { const li = document.createElement("li"); li.textContent = t; $("steps").append(li); }
+    }
     try {
       const got = await chrome.storage.local.get(KEY);
       const v = got && got[KEY];
@@ -47,22 +63,30 @@
     if (st.active) say("取り込み中です。動画ページの「目次」パネルに、認識した結果が順に出ます。");
   }
 
+  $("save").addEventListener("click", async () => {
+    try {
+      const serverUrl = await saveSettings();
+      say("保存しました。エンジンを確かめています…");
+      const problem = await preflight(serverUrl);
+      if (problem) { say("保存はしましたが、つながりません。" + problem, true); return; }
+      say("つながりました。このタブを閉じて、YouTube の動画のタブへ戻り、パネルの「音声から作る」を押してください。");
+      setTimeout(async () => { try { const t = await chrome.tabs.getCurrent(); if (t) await chrome.tabs.remove(t.id); } catch (_) { /* 閉じられなくてもよい */ } }, 2500);
+    } catch (e) { say(String((e && e.message) || e), true); }
+  });
+
   $("go").addEventListener("click", async () => {
     try {
-      const serverUrl = C.validateServerUrl($("url").value.trim());
-      const token = $("token").value.trim();
-      if (!token) { say("token を入力してください。", true); return; }
+      const serverUrl = await saveSettings(); // 動画のタブでなくても、先に保存する(設定だけ済ませられる)
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       let isWatch = false;
       try { const u = new URL((tab && tab.url) || ""); isWatch = u.hostname === "www.youtube.com" && u.pathname === "/watch"; } catch (_) { /* 読めない */ }
-      if (!isWatch) { say("YouTube の動画ページ(/watch)を開いてから押してください。", true); return; }
-      try { await chrome.storage.local.set({ [KEY]: { url: serverUrl, token, language: $("lang").value } }); } catch (_) { /* 保存できなくても続ける */ }
+      if (!isWatch) { say("設定は保存しました。YouTube の動画ページ(/watch)のタブで、もう一度押してください(または、動画のページのパネルの「音声から作る」)。", true); return; }
       say("エンジンを確かめています…");
       const problem = await preflight(serverUrl);
       if (problem) { say(problem, true); return; }
       say("音の取り込みを始めています…");
       // 音は、動画ページの content script が <video> から取り出す(tabCapture は使わない)。ここでは、始める合図だけ送る。
-      const res = await chrome.runtime.sendMessage({ target: "background", type: "start", relay: true, tabId: tab.id, serverUrl, token, language: $("lang").value });
+      const res = await chrome.runtime.sendMessage({ target: "background", type: "start", relay: true, tabId: tab.id, serverUrl, token: $("token").value.trim(), language: $("lang").value });
       if (!res || !res.ok) { say(explain((res && res.error) || ""), true); return; }
       show(true);
       say("取り込みを始めました。動画を再生すると、30 秒ごとに結果が「目次」パネルへ出ます(再生の速さでしか進みません)。");
