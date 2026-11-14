@@ -50,7 +50,7 @@ test("relay: POST は JSON の本文と Content-Type を付ける", async () => 
 test("relay: 許可リストにない経路・メソッド・形は、送らずに forbidden", async () => {
   const { st, send } = loadBackground({ storage: CFG });
   const bad = [
-    ["POST", "/v1/transcribe"], ["POST", "/v1/detect"], ["POST", "/v1/corrections"], ["GET", "/v1/health"],
+    ["POST", "/v1/transcribe"], ["POST", "/v1/detect"], ["POST", "/v1/corrections"],
     ["GET", "/v1/live"], ["POST", "/v1/me"], ["DELETE", "/v1/me"], ["GET", "/v1/shares?video=../x"], ["GET", "/v1/shares?video="],
     ["GET", "/v1/shares?video=a&x=1"], ["POST", "/v1/admin/users/x/disable"], ["POST", "/v1/admin/users/u_0123abcd/explode"],
     ["POST", "/v1/admin/users/u_0123abcd/disable/extra"], ["GET", "/v1/admin/audit?n=abcd"], ["GET", "//evil.com/v1/me"], ["GET", "http://evil.com/v1/me"],
@@ -531,4 +531,39 @@ test("ダイジェスト: 割合の選択は、別の動画へ移ると既定(20
   await page.handlers.onRun();
   await flush();
   assert.equal(page.ui.digest.at(-1).ratio, 0.2);
+});
+
+test("題名: ダブルクリックで直した題名は保存され、次に開くと残る。空にすると自動に戻る", async () => {
+  const page = await readyPage();
+  const start = lastChapters(page)[1].start;
+  page.handlers.onTitleEdit(1, "  料理の仕込み  ");
+  assert.equal(lastChapters(page)[1].title, "料理の仕込み");
+  await flush();
+  assert.deepEqual(clone(page.area.data[savedKey()].titles), [{ start, title: "料理の仕込み" }]);
+  page.handlers.onTitleEdit(1, "");
+  assert.notEqual(lastChapters(page)[1].title, "料理の仕込み");
+  await flush();
+  assert.equal(page.area.data[savedKey()].titles, undefined);
+});
+
+test("検索: 題名と字幕から探し、見つからなければその旨を出す。空にすると通常の一覧へ戻る", async () => {
+  const page = await readyPage();
+  const results = () => page.ui.calls.filter((c) => c[0] === "searchResults").at(-1);
+  page.handlers.onSearch("  ");
+  assert.equal(results()[1], null);
+  page.handlers.onSearch("zzzz存在しない語");
+  assert.deepEqual(clone(results()[1]), []);
+  const first = lastChapters(page)[0];
+  page.handlers.onSearch(Array.from(first.title)[0]); // 題名の最初の 1 文字は、少なくとも題名に当たる
+  assert.ok(results()[1].length >= 1);
+});
+
+test("前回の結果: 目次を作ると、境界と題名だけを保存する(字幕・代表の文は保存しない)", async () => {
+  const page = await readyPage();
+  await new Promise((r) => setTimeout(r, 1700)); // 保存は 1.5 秒の間引き
+  const auto = page.area.data[savedKey()].auto;
+  assert.ok(auto && auto.boundaries.length >= 2);
+  const text = JSON.stringify(page.area.data[savedKey()]);
+  assert.ok(!text.includes("snippet"));
+  assert.ok(!("cues" in page.area.data[savedKey()]));
 });

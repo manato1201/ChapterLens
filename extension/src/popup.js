@@ -13,6 +13,27 @@
     } catch (_) { return { active: false }; }
   }
 
+  // 失敗の理由を、次にすることつきで言い直す
+  function explain(raw) {
+    const m = String(raw || "");
+    if (/constraint/i.test(m)) return "このタブの音を受け取れませんでした(Chrome が取り込みの指定を拒みました)。動画のタブを開いたまま、もう一度押してください。それでも出るときは、拡張を再読み込みし、Chrome を最新にしてください。";
+    if (/Extension has not been invoked|activeTab/i.test(m)) return "この動画のタブで、拡張のアイコンを押してから始めてください(別のタブから押すと、音を受け取れません)。";
+    if (/Cannot capture a tab with an active stream|already/i.test(m)) return "このタブの音は、すでに取り込み中です。「停止」を押してから、もう一度始めてください。";
+    if (/NotAllowed|Permission/i.test(m)) return "Chrome が音の取り込みを許可しませんでした。拡張のアイコンを、動画のタブで押し直してください。";
+    return m || "始められませんでした。";
+  }
+
+  // 取り込みの前に、エンジンへつながるか・token が合うかを確かめる(つながらないのに「始めた」と言わない)。
+  // 通信は background の中継を通す(拡張の通信は background と offscreen だけ。保存済みの URL・token が使われる)。
+  async function preflight(serverUrl) {
+    let r;
+    try { r = await chrome.runtime.sendMessage({ target: "background", type: "engine", method: "GET", path: "/v1/me" }); } catch (_) { r = null; }
+    if (r && r.ok) return null;
+    if (r && (r.status === 401 || r.status === 403)) return "token が合っていません。エンジンの起動画面か、~/.chapterlens/token の中身を、もう一度貼ってください。";
+    if (r && r.status) return "エンジンが「" + r.status + "」を返しました。エンジンのログを見てください。";
+    return "エンジン(" + serverUrl + ")につながりません。エンジンを起動しているか(uv run python -m chapterlens serve)、URL とポートを確かめてください。";
+  }
+
   function show(active) { $("go").hidden = active; $("stop").hidden = !active; for (const id of ["url", "token", "lang"]) $(id).disabled = active; }
 
   async function init() {
@@ -36,10 +57,13 @@
       try { const u = new URL((tab && tab.url) || ""); isWatch = u.hostname === "www.youtube.com" && u.pathname === "/watch"; } catch (_) { /* 読めない */ }
       if (!isWatch) { say("YouTube の動画ページ(/watch)を開いてから押してください。", true); return; }
       try { await chrome.storage.local.set({ [KEY]: { url: serverUrl, token, language: $("lang").value } }); } catch (_) { /* 保存できなくても続ける */ }
-      say("接続しています…");
-      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
-      const res = await chrome.runtime.sendMessage({ target: "background", type: "start", streamId, tabId: tab.id, serverUrl, token, language: $("lang").value });
-      if (!res || !res.ok) { say((res && res.error) || "始められませんでした。", true); return; }
+      say("エンジンを確かめています…");
+      const problem = await preflight(serverUrl);
+      if (problem) { say(problem, true); return; }
+      say("音の取り込みを始めています…");
+      // 音は、動画ページの content script が <video> から取り出す(tabCapture は使わない)。ここでは、始める合図だけ送る。
+      const res = await chrome.runtime.sendMessage({ target: "background", type: "start", relay: true, tabId: tab.id, serverUrl, token, language: $("lang").value });
+      if (!res || !res.ok) { say(explain((res && res.error) || ""), true); return; }
       show(true);
       say("取り込みを始めました。動画を再生すると、30 秒ごとに結果が「目次」パネルへ出ます(再生の速さでしか進みません)。");
     } catch (e) { say(String((e && e.message) || e), true); }

@@ -52,22 +52,22 @@ test("excerpt: 空白をつめ、長ければ「…」で切る(サロゲート�
 // ---- 章 ----
 const cues = [
   { start: 0, end: 30, text: "はじめに" },
-  { start: 30, end: 100, text: "第一の話題" },
-  { start: 100, end: 200, text: "第二の話題" },
+  { start: 30, end: 100, text: "つぎのはなし" },
+  { start: 100, end: 200, text: "そのつぎのはなし" },
   { start: 200, end: 300, text: "おわりに" },
 ];
 
-test("buildChapters: 先頭は 0 秒・区間は連続・題名は最初の字幕", () => {
+test("buildChapters: 先頭は 0 秒・区間は連続・手がかりの語が無ければ、題名は最初の字幕", () => {
   const ch = core.buildChapters([100, 200], cues, 300);
   assert.deepEqual(ch.map((c) => [c.start, c.end]), [[0, 100], [100, 200], [200, 300]]);
-  assert.deepEqual(ch.map((c) => c.title), ["はじめに", "第二の話題", "おわりに"]);
+  assert.deepEqual(ch.map((c) => c.title), ["はじめに", "そのつぎのはなし", "おわりに"]);
   // 範囲外・0 の境界は無視する
   assert.equal(core.buildChapters([0, 500, 100], cues, 300).length, 2);
 });
 
 test("descriptionText: YouTube の規則(3 つ以上・各 10 秒以上)を満たすときだけ", () => {
   const ch = core.buildChapters([100, 200], cues, 300);
-  assert.equal(core.descriptionText(ch), "0:00 はじめに\n1:40 第二の話題\n3:20 おわりに");
+  assert.equal(core.descriptionText(ch), "0:00 はじめに\n1:40 そのつぎのはなし\n3:20 おわりに");
   assert.equal(core.descriptionText(core.buildChapters([100], cues, 300)), null); // 2 つだけ
   assert.equal(core.descriptionText(core.buildChapters([5, 100], cues, 300)), null); // 5 秒の章
 });
@@ -208,4 +208,35 @@ test("selectDigest: 3 時間・章の境界なしでも、数秒以内(章の「
   const spans = core.selectDigest(long, [], 10800);
   assert.ok(spans.length > 0);
   assert.ok(Date.now() - t0 < 5000, `${Date.now() - t0}ms`);
+});
+
+test("buildChapters: 題名は、その章に多く・他の章に少ない言葉(特徴語)。代表の 1 文も付く", () => {
+  const mk = (t, s) => ({ start: s, end: s + 5, text: t });
+  const cs = [
+    mk("こんにちは。こんにちは。今日は Unity の3Dモデルの話をします", 0), mk("まず3Dモデルをインポートしてマテリアルを設定します", 10),
+    mk("ここからはゲームの公式番組について。第1回リミテッドの話", 100), mk("公式番組では新しいパッチの情報が出ました。パッチノートを読みます", 110),
+    mk("それでは質問コーナーです。リスナーの声を読んでいきます", 200), mk("リスナーの声でいちばん多いのは、ドロップ率についてでした", 210),
+  ];
+  const ch = core.buildChapters([100, 200], cs, 300);
+  assert.match(ch[0].title, /モデル/);
+  assert.match(ch[1].title, /公式番組|パッチノート/);
+  assert.match(ch[2].title, /リスナー/);
+  assert.ok(ch.every((c) => !/^こんにちは/.test(c.title))); // 冒頭のあいさつは題名にしない
+  assert.ok(ch.every((c) => c.snippet.length > 0 && Array.from(c.snippet).length <= 41));
+});
+
+test("書き出し: SRT / VTT / Markdown", () => {
+  const cs = [{ start: 0, end: 2.5, text: "はじめに" }, { start: 3661.25, end: 3663, text: "おわり" }];
+  assert.equal(core.srtText(cs), "1\n00:00:00,000 --> 00:00:02,500\nはじめに\n\n2\n01:01:01,250 --> 01:01:03,000\nおわり\n");
+  assert.ok(core.vttText(cs).startsWith("WEBVTT\n\n00:00:00.000 --> 00:00:02.500\nはじめに"));
+  const md = core.markdownText([{ start: 0, title: "導入", snippet: "最初の話" }, { start: 75, title: "本題", snippet: "" }], { videoUrl: "https://www.youtube.com/watch?v=abc", heading: "題" });
+  assert.equal(md, "# 題\n\n## [0:00](https://www.youtube.com/watch?v=abc&t=0s) 導入\n\n> 最初の話\n\n## [1:15](https://www.youtube.com/watch?v=abc&t=75s) 本題\n");
+});
+
+test("検索・題名の上書き", () => {
+  const cs = [{ start: 1, end: 2, text: "Unity の ３Ｄモデル" }, { start: 9, end: 10, text: "別の話" }];
+  assert.deepEqual(core.searchCues(cs, "3dモデル"), [{ start: 1, text: "Unity の ３Ｄモデル" }]); // 全角・大文字小文字を同じとみなす
+  assert.deepEqual(core.searchCues(cs, ""), []);
+  const ch = core.applyTitleOverrides([{ start: 0, title: "a" }, { start: 100.4, title: "b" }], [{ start: 100, title: "直した" }]);
+  assert.deepEqual(ch.map((c) => c.title), ["a", "直した"]);
 });

@@ -309,16 +309,91 @@
     return chars.length > maxChars ? chars.slice(0, maxChars).join("") + "…" : t;
   }
 
-  /** 境界の時刻の列 → 章の一覧。先頭は 0 秒。title は最初の字幕の冒頭。 */
+  // ---------- 題名: その章で「よく出て、他の章では出ない」言葉を並べる(要約ではなく、手がかりの語) ----------
+  // 字幕の冒頭(「こんにちは。こんにちは。…」)では、どの場面か分からない。章ごとの特徴語を、TF-IDF で選んで題名にする。
+  const TERM_KATA = /[ァ-ヴー]{3,}/g;
+  const TERM_KANJI = /[一-鿿々]{2,}/g;
+  const TERM_LATIN = /[A-Za-z][A-Za-z0-9+#.]{1,}|[0-9]+[A-Za-z]{1,}/g;
+  // どの章にも出る、題名の手がかりにならない言葉(多くの章に出れば idf で下がるが、章が少ないときの保険)
+  const GENERIC_TERMS = new Set(
+    ("今日 自分 本当 結構 全然 一番 最初 最後 今回 動画 皆さん 感じ 意味 問題 時間 部分 場合 普通 完全 絶対 大丈夫 " +
+      "ありがとう こんにちは こんばんは お願い 今度 全部 一応 気持ち 人間 something just very really thing things").split(/\s+/)
+  );
+
+  function candidateTerms(text) {
+    const out = new Map(); // 小文字 → { shown, count }
+    const add = (raw) => {
+      const key = raw.toLowerCase();
+      if (GENERIC_TERMS.has(key) || STOP.has(key) || /^[0-9.]+$/.test(key)) return;
+      const e = out.get(key);
+      if (e) e.count++;
+      else out.set(key, { shown: raw, count: 1 });
+    };
+    for (const m of text.match(TERM_KATA) || []) add(m);
+    for (const m of text.match(TERM_KANJI) || []) add(m);
+    for (const m of text.match(TERM_LATIN) || []) add(m.replace(/\.+$/, ""));
+    return out;
+  }
+
+  /** sections: [{ text, cues }] → [{ title, snippet }]。章が 1 つなら idf が働かないので、出現数だけで選ぶ。 */
+  function labelSections(sections) {
+    const per = sections.map((sec) => candidateTerms(sec.text));
+    const N = per.length;
+    const df = new Map();
+    for (const terms of per) for (const k of terms.keys()) df.set(k, (df.get(k) || 0) + 1);
+    return sections.map((sec, i) => {
+      const scored = [];
+      for (const [k, e] of per[i]) {
+        const idf = N > 1 ? Math.log(1 + N / df.get(k)) : 1;
+        scored.push({ k, shown: e.shown, score: e.count * idf * (1 + 0.12 * Math.min(Array.from(k).length, 8)) });
+      }
+      scored.sort((x, y) => y.score - x.score || x.k.localeCompare(y.k));
+      const picked = [];
+      for (const t of scored) {
+        if (picked.length >= 3) break;
+        if (picked.some((p) => p.k.includes(t.k) || t.k.includes(p.k))) continue; // 「モデル」と「3Dモデル」のような重なりは 1 つに
+        picked.push(t);
+      }
+      let title = "";
+      for (const t of picked) {
+        const next = title ? `${title}・${t.shown}` : t.shown;
+        if (Array.from(next).length > 28 && title) break;
+        title = next;
+      }
+      // 代表の 1 文: 特徴語をいちばん含む、10〜60 文字の字幕
+      const weight = new Map(picked.map((t) => [t.k, t.score]));
+      let best = null, bestScore = 0;
+      for (const cue of sec.cues) {
+        const len = Array.from(cue.text.trim()).length;
+        if (len < 10 || len > 60) continue;
+        const low = cue.text.toLowerCase();
+        let sc = 0;
+        for (const [k, w] of weight) if (low.includes(k)) sc += w;
+        sc = sc / Math.sqrt(len);
+        if (sc > bestScore) { bestScore = sc; best = cue; }
+      }
+      return { title, snippet: best ? excerpt(best.text, 40) : "" };
+    });
+  }
+
+  /** 境界の時刻の列 → 章の一覧。先頭は 0 秒。title は章の特徴語(無ければ最初の字幕の冒頭)、snippet は代表の 1 文。 */
   function buildChapters(boundaries, cues, durationS) {
     const starts = [0, ...boundaries.filter((b) => b > 0 && b < durationS)];
     const chapters = [];
+    const sections = [];
     for (let i = 0; i < starts.length; i++) {
       const start = starts[i];
       const end = i + 1 < starts.length ? starts[i + 1] : durationS;
-      const cue = cues.find((c) => c.start >= start - 1e-6);
-      chapters.push({ start, end, title: cue ? excerpt(cue.text, 24) : "" });
+      const inside = cues.filter((c) => c.start >= start - 1e-6 && c.start < end - 1e-6);
+      const first = cues.find((c) => c.start >= start - 1e-6);
+      chapters.push({ start, end, title: first ? excerpt(first.text, 24) : "", snippet: "" });
+      sections.push({ text: inside.map((c) => c.text).join(" "), cues: inside });
     }
+    const labels = labelSections(sections);
+    labels.forEach((l, i) => {
+      if (l.title) chapters[i].title = l.title;
+      chapters[i].snippet = l.snippet;
+    });
     return chapters;
   }
 
@@ -327,6 +402,57 @@
     if (chapters.length < 3) return null;
     if (chapters.some((c) => c.end - c.start < 10)) return null;
     return chapters.map((c) => `${formatTimestamp(c.start)} ${c.title || "チャプター"}`).join("\n");
+  }
+
+  // ---------- 書き出し・検索・題名の上書き(画面の外でも使える純粋な関数) ----------
+  function srtTime(sec, comma) {
+    const ms = Math.max(0, Math.round(sec * 1000));
+    const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000), s = Math.floor((ms % 60000) / 1000), r = ms % 1000;
+    const p = (n, w) => String(n).padStart(w, "0");
+    return `${p(h, 2)}:${p(m, 2)}:${p(s, 2)}${comma ? "," : "."}${p(r, 3)}`;
+  }
+  /** 字幕 → SRT(番号つき・カンマ区切りの時刻)。 */
+  function srtText(cues) {
+    return cues.map((c, i) => `${i + 1}\n${srtTime(c.start, true)} --> ${srtTime(c.end, true)}\n${c.text.trim()}\n`).join("\n");
+  }
+  /** 字幕 → WebVTT。 */
+  function vttText(cues) {
+    return "WEBVTT\n\n" + cues.map((c) => `${srtTime(c.start, false)} --> ${srtTime(c.end, false)}\n${c.text.trim()}\n`).join("\n");
+  }
+  /** 章 → Markdown(見出し・時刻・代表の 1 文)。videoUrl があれば、時刻を、その位置へ飛ぶリンクにする。 */
+  function markdownText(chapters, opts) {
+    const o = opts || {};
+    const lines = [];
+    if (o.heading) lines.push(`# ${o.heading}`, "");
+    for (const c of chapters) {
+      const t = formatTimestamp(c.start);
+      const link = o.videoUrl ? `[${t}](${o.videoUrl}${o.videoUrl.includes("?") ? "&" : "?"}t=${Math.floor(c.start)}s)` : t;
+      lines.push(`## ${link} ${c.title || "チャプター"}`);
+      if (c.snippet) lines.push("", `> ${c.snippet}`);
+      lines.push("");
+    }
+    return lines.join("\n").trimEnd() + "\n";
+  }
+  /** 字幕の中から、語を含む行を探す(大文字小文字・全角半角の差は無視)。最大 limit 件。 */
+  function searchCues(cues, query, limit) {
+    const q = String(query || "").normalize("NFKC").toLowerCase().trim();
+    if (!q) return [];
+    const out = [];
+    for (const c of cues || []) {
+      if (c.text.normalize("NFKC").toLowerCase().includes(q)) {
+        out.push({ start: c.start, text: c.text.trim() });
+        if (out.length >= (limit || 50)) break;
+      }
+    }
+    return out;
+  }
+  /** 利用者が付けた題名([{start, title}])を、開始時刻が 1 秒以内の章へ当てる。 */
+  function applyTitleOverrides(chapters, overrides) {
+    if (!overrides || overrides.length === 0) return chapters;
+    return chapters.map((c) => {
+      const o = overrides.find((x) => Math.abs(x.start - c.start) <= 1);
+      return o && o.title ? Object.assign({}, c, { title: o.title, custom: true }) : c;
+    });
   }
 
   /** いま再生中の章の番号(二分探索)。 */
@@ -531,7 +657,7 @@
   return {
     tokens, termCounts, cosine, similarityCurve, selectBoundaries, refineBoundaries, snap,
     detect, detectPartial, V2_PARAMS, GRANULARITY, targetCountFor,
-    formatTimestamp, excerpt, buildChapters, descriptionText, chapterIndexAt, cuesFromRows,
+    formatTimestamp, excerpt, labelSections, buildChapters, srtText, vttText, markdownText, searchCues, applyTitleOverrides, descriptionText, chapterIndexAt, cuesFromRows,
     PreparedCues, DIGEST, selectDigest, digestAgreement, digestNext,
     EDIT_MIN_GAP_S, normalizeBoundaries, removeBoundary, moveBoundary, addBoundary,
   };

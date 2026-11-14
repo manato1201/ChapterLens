@@ -4,13 +4,16 @@
 <meta charset="utf-8">
 <title>ChapterLens</title>
 <style>
-  :root { color-scheme: light dark; --line: #8886; --accent: #0b57d0; }
-  body { margin: 0; padding: 12px; width: 320px; font: 13px/1.5 system-ui, "Yu Gothic UI", sans-serif; }
+  :root { color-scheme: light dark; --line: #8886; --accent: #0b57d0; --bg: #fff; --fg: #1d1d20; --field: #f4f4f6; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #ececf1; --field: #26262b; --accent: #2f6fe0; } }
+  body { margin: 0; padding: 14px; width: 340px; background: var(--bg); color: var(--fg); font: 13px/1.5 system-ui, "Yu Gothic UI", sans-serif; }
+  select, option { background-color: var(--field); color: var(--fg); }
   h1 { font-size: 14px; margin: 0 0 6px; }
   p { margin: 4px 0 8px; }
   .muted { opacity: .7; font-size: 12px; }
   label { display: block; margin: 8px 0 2px; font-size: 12px; opacity: .8; }
-  input, select { width: 100%; box-sizing: border-box; padding: 4px 6px; font: inherit; }
+  input, select { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; background: var(--field); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; }
+  ol.steps { margin: 6px 0 10px; padding-left: 1.4em; opacity: .85; font-size: 12px; }
   button { margin-top: 10px; width: 100%; padding: 7px; font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); }
   button.go { background: var(--accent); color: #fff; border-color: var(--accent); }
   button[disabled] { opacity: .5; cursor: default; }
@@ -22,6 +25,7 @@
 <body>
   <h1>ChapterLens — 音声から作る</h1>
   <p class="muted">字幕(文字起こし)が無い動画・ライブ配信用。再生中のタブの音を、<b>この PC の中のエンジン</b>(127.0.0.1)で文字にします。音はファイルに保存せず、外部にも送りません。</p>
+  <ol class="steps"><li>この PC でエンジンを起動する(<code>uv run python -m chapterlens serve</code>)</li><li>下に URL と token を入れる(初回だけ)</li><li>YouTube の動画を再生し、このボタンを押す</li></ol>
   <label for="url">エンジンの URL</label>
   <input id="url" value="http://127.0.0.1:8787" autocomplete="off">
   <label for="token">token(<code>~/.chapterlens/token</code> の中身)</label>

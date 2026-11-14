@@ -76,3 +76,21 @@ git diff --cached --stat                   # 大きなファイル・DB・ログ
 - 認証は token だけで、失敗回数での締め出しは無い(256 ビットの乱数なので総当たりは非現実的)。
 
 次は [用語集](glossary.md)。
+
+## 音声の取り込み経路の変更(2026-11-14)
+
+実機で、`tabCapture` の経路が「Invalid capture constraints」「Error starting tab capture」で失敗した。**既定の経路を、動画ページの content script が `<video>.captureStream()` から音を取り出す方式に替えた**(popup は「始める合図」だけを送る)。
+
+- content script が音を 16kHz・16bit・base64 にして、約 1 秒ごとに offscreen へ送り(`pcm`)、offscreen が 30 秒ずつ WAV にしてエンジン(127.0.0.1)へ送る。終わりは `pcm-end`。音は再生にそのまま流れ、ファイルには保存しない。
+- `tabCapture` の経路(offscreen の `getUserMedia`)は、コードに残してあるが、popup からは使わない。権限(`tabCapture`)も、まだ manifest に残っている(外せるかは、実機で確かめてから)。
+- 講義[第 7 回](../lecture/07-chrome-extension.md)・[第 8 回](../lecture/08-audio-and-asr.md)の `tabCapture` の説明は、この変更の前の記述。
+- **未確認**: 本物の Chrome・YouTube での動作(Node のテストでは、`captureStream` を再現できない)。
+
+## パネルの機能追加(2026-11-14)
+
+- **パネルから音声を始める**: 「音声から作る」ボタン(接続設定は保存済みのものを background が使う。未設定のときだけ、設定画面を開く)。
+- **エンジンの状態表示**: 読み取りだけの `GET /v1/health` を、中継の許可リストに足した(14 経路)。20 秒ごと・パネルが見えている間だけ。
+- **題名の直接編集**(ダブルクリック)・**検索**(題名と字幕)・**一覧の自動スクロール**・**`[` / `]` キー**(前後の章)。
+- **書き出し**: Markdown(クリップボードにもコピー)・字幕 SRT・VTT。
+- **前回の結果**: 境界と題名(特徴語)を保存し、次に開いたとき、字幕を読む前に目次を出す。保存するのは、時刻・利用者が付けた題名・特徴語の題名まで(**字幕そのものと、代表の 1 文は保存しない**)。
+- **未確認**: 本物の Chrome・YouTube での動作。

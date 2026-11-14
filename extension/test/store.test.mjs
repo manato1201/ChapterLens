@@ -130,3 +130,15 @@ test("store: 章の調整とダイジェストの保存が同時に走っても�
   assert.deepEqual(got.digest.spans, [{ start: 5, end: 20 }]);
   assert.ok((await s.load("v2")).manual);
 });
+
+test("store: 題名と前回の自動の結果(境界+題名)を保存する。壊れた値は読み飛ばす", async () => {
+  const area = memoryArea();
+  const store = Store.create(area);
+  assert.equal(await store.saveTitles("v1", [{ start: 10, title: "  直した題名  " }, { start: 20, title: "" }]), true);
+  assert.equal(await store.saveAuto("v1", [100, 200], [{ start: 0, title: "導入" }]), true);
+  const got = await store.load("v1");
+  assert.deepEqual(got.titles, [{ start: 10, title: "直した題名" }]);
+  assert.deepEqual(got.auto.boundaries, [100, 200]);
+  assert.equal(await store.saveTitles("v1", [{ start: -1, title: "x" }]), false);
+  assert.equal(await store.saveAuto("v1", "bad", []), false);
+});

@@ -2,7 +2,9 @@
  * 動画ごとの、利用者の調整の保存(chrome.storage.local)。この PC のブラウザの中だけ。どこにも送らない。
  *   manual: 章の境界を利用者が直した結果 { boundaries: [秒…], auto: [自動の境界…], at }
  *   digest: ダイジェストの区間を利用者が調整した結果 { spans: [{start,end}…], auto: [{start,end}…], ratio, at }
- * 保存するのは時刻と設定だけ(字幕・題名・動画の中身は保存しない)。動画が増えすぎないよう、新しい順に maxVideos 本まで。
+ *   titles: 利用者が付けた章の題名 [{start, title}](60 文字まで)
+ *   auto:   前回の自動の結果 { boundaries, titles: [{start, title}] }(次に開いたとき、すぐ目次を出すため。題名は特徴語で、字幕の文は含まない)
+ * 保存するのは時刻・設定・利用者が付けた題名・特徴語の題名だけ(字幕そのもの・代表の 1 文・動画の中身は保存しない)。動画が増えすぎないよう、新しい順に maxVideos 本まで。
  * area は chrome.storage.local と同じ形({get(keys), set(obj), remove(keys)}。Promise を返す)。壊れた値は読み飛ばす。
  */
 (function (root, factory) {
@@ -29,6 +31,17 @@
     )
       return null;
     return list.slice().sort((a, b) => a - b);
+  }
+
+  function cleanTitles(list) {
+    if (!Array.isArray(list) || list.length > MAX_BOUNDARIES) return null;
+    const out = [];
+    for (const t of list) {
+      if (!t || !isTime(t.start) || typeof t.title !== "string") return null;
+      const title = t.title.replace(/\s+/g, " ").trim().slice(0, 60);
+      if (title) out.push({ start: t.start, title });
+    }
+    return out;
   }
 
   function cleanSpans(list) {
@@ -90,6 +103,11 @@
               at: v.digest.at,
             };
         }
+        if (v.titles) { const t = cleanTitles(v.titles); if (t) out.titles = t; }
+        if (v.auto) {
+          const b = cleanBoundaries(v.auto.boundaries), t = cleanTitles(v.auto.titles || []);
+          if (b && t) out.auto = { boundaries: b, titles: t, at: v.auto.at };
+        }
         return out;
       } catch (_) {
         return {};
@@ -127,6 +145,15 @@
         });
       },
       clearManual: (videoId) => write(videoId, { manual: null }),
+      async saveTitles(videoId, titles) {
+        const t = cleanTitles(titles);
+        return t ? write(videoId, { titles: t.length ? t : null }) : false;
+      },
+      async saveAuto(videoId, boundaries, titles) {
+        const b = cleanBoundaries(boundaries), t = cleanTitles(titles || []);
+        if (!b || !t) return false;
+        return write(videoId, { auto: { boundaries: b, titles: t, at: now() } });
+      },
       async saveDigest(videoId, spans, auto, ratio) {
         const s = cleanSpans(spans),
           a = cleanSpans(auto);
@@ -148,5 +175,5 @@
     };
   }
 
-  return { create, cleanBoundaries, cleanSpans, VIDEO_ID, PREFIX };
+  return { create, cleanBoundaries, cleanSpans, cleanTitles, VIDEO_ID, PREFIX };
 });

@@ -81,6 +81,7 @@ export function loadContent({ pathname = "/watch", videoId = "vid1", duration = 
     setChapters: (c, _f, o) => { ui.chapters.push(clone(c)); ui.chapterOpts.push(clone(o || {})); },
     setManual: (m) => ui.manual.push(m), setTab: (n) => ui.tab.push(n),
     setDigest: (v) => ui.digest.push(clone(v)), setShare: (v) => ui.share.push(clone(v)),
+    setSearch: rec("search"), setSearchResults: rec("searchResults"), setEngine: rec("engine"), setAudioState: rec("audioState"), setVideoId: rec("videoId"),
   };
   const fakeUI = { createPanel: (_doc, _grans, handlers) => { captured.handlers = handlers; return panel; } };
   const ticks = [];
@@ -113,7 +114,7 @@ export function loadContent({ pathname = "/watch", videoId = "vid1", duration = 
   const win = { ChapterLensCore: Core, ChapterLensCapture: Cap, ChapterLensTranscript: rows ? { loadTranscript: async () => rows } : Tr, ChapterLensUI: fakeUI, ChapterLensStore: StoreMod, ChapterLensEngine: EngineMod };
   const ctx = {
     window: win, document, location: loc, chrome, URL, performance, console, EventTarget,
-    Date: { now: () => clock.t }, setInterval: () => 1, clearInterval: () => {}, setTimeout, Promise, navigator: {},
+    Date: { now: () => clock.t }, setInterval: () => 1, clearInterval: () => {}, setTimeout, clearTimeout, Promise, navigator: {},
     Math, Number, Set, Array, Object, isFinite, String, JSON, Map,
   };
   vm.runInNewContext(src("content.js"), ctx);

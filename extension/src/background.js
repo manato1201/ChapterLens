@@ -15,6 +15,7 @@ const ENGINE_KEY = "chapterlens.engine";
 const ENGINE_TIMEOUT_MS = 15000;
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const ENGINE_ROUTES = [
+  ["GET", /^\/v1\/health$/],
   ["GET", /^\/v1\/me$/],
   ["POST", /^\/v1\/me\/forget$/],
   ["GET", /^\/v1\/shares(\?video=[A-Za-z0-9_-]{1,64})?$/],
@@ -48,13 +49,13 @@ async function startCapture(msg) {
   await ensureOffscreen();
   const res = await chrome.runtime.sendMessage({
     target: "offscreen", type: "start",
-    streamId: msg.streamId, tabId: msg.tabId, serverUrl: msg.serverUrl, token: msg.token, language: msg.language,
+    streamId: msg.streamId, tabId: msg.tabId, serverUrl: msg.serverUrl, token: msg.token, language: msg.language, videoToo: !!msg.videoToo, relay: !!msg.relay,
   });
   if (!res || !res.ok) {
     if (await hasOffscreen()) await chrome.offscreen.closeDocument().catch(() => {});
     throw new Error((res && res.error) || "取り込みを始められませんでした");
   }
-  chrome.tabs.sendMessage(msg.tabId, { type: "cl-started", wallMs: Date.now() }).catch(() => {});
+  chrome.tabs.sendMessage(msg.tabId, { type: "cl-started", wallMs: Date.now(), relay: !!msg.relay }).catch(() => {});
 }
 
 // ---- ②エンジンの API 中継 ----
@@ -98,8 +99,30 @@ async function engineCall(msg, sender) {
   }
 }
 
+// 動画ページの「音声から作る」ボタンから。接続設定(URL・token)は、保存済みのものを使う(ページからは受け取らない)
+async function startFromPage(msg, sender) {
+  if (!sender || sender.id !== chrome.runtime.id || !sender.tab) return { ok: false, error: "この拡張の動画ページからだけ、始められます" };
+  let cfg;
+  try { cfg = (await chrome.storage.local.get(ENGINE_KEY))[ENGINE_KEY]; } catch (_) { cfg = null; }
+  if (!cfg || !cfg.url || !cfg.token) return { ok: false, code: "unconfigured" };
+  try {
+    await startCapture({ tabId: sender.tab.id, serverUrl: cfg.url, token: cfg.token, language: cfg.language || "auto", relay: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== "background") return;
+  if (msg.type === "start-from-page") {
+    startFromPage(msg, sender).then(sendResponse, (e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+    return true;
+  }
+  if (msg.type === "open-setup") {
+    if (sender && sender.id === chrome.runtime.id) chrome.tabs.create({ url: chrome.runtime.getURL("src/popup.html") }).catch(() => {});
+    return;
+  }
   if (msg.type === "engine") {
     engineCall(msg, sender).then(sendResponse, (e) => sendResponse({ ok: false, code: "internal", error: String((e && e.message) || e) }));
     return true;

@@ -8,18 +8,28 @@
       :root {
         color-scheme: light dark;
         --line: #8886;
+        --bg: #ffffff;
+        --fg: #1d1d20;
+        --field: #f4f4f6;
+        --card: #fafafb;
         --accent: #0b57d0;
         --err: #b3261e;
         --ok: #1e6b34;
       }
       @media (prefers-color-scheme: dark) {
         :root {
+          --bg: #121214;
+          --fg: #ececf1;
+          --field: #26262b;
+          --card: #1a1a1e;
           --accent: #8ab4f8;
           --err: #f2b8b5;
           --ok: #8bd49c;
         }
       }
       body {
+        background: var(--bg);
+        color: var(--fg);
         margin: 0 auto;
         padding: 16px;
         max-width: 720px;
@@ -75,11 +85,34 @@
         padding: 3px 8px;
         border-radius: 6px;
         border: 1px solid var(--line);
-        background: transparent;
-        color: inherit;
+        background: var(--field);
+        color: var(--fg);
+      }
+      /* 一覧(プルダウン)の背景と文字を、はっきり指定する(透明のままだと、暗い画面で白地に白字になる) */
+      select,
+      option {
+        background-color: var(--field);
+        color: var(--fg);
+      }
+      option:checked {
+        background-color: var(--accent);
+        color: #fff;
+      }
+      input::placeholder {
+        color: var(--fg);
+        opacity: 0.5;
       }
       button {
         cursor: pointer;
+      }
+      button:hover:not([disabled]) {
+        border-color: var(--accent);
+      }
+      button:focus-visible,
+      select:focus-visible,
+      input:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
       }
       button[disabled] {
         opacity: 0.5;

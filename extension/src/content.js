@@ -31,6 +31,8 @@
     digest: { ratio: 0.2, auto: [], custom: null, enabled: false, onTime: null },
     share: { info: null, list: [], overlay: new Set(), mineOff: false },
     live: null,
+    titles: [], // 利用者が付けた題名 [{start, title}]
+    query: "",
   };
 
   const area = (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) || null;
@@ -94,6 +96,9 @@
     updateCurrent();
     drawMarkers();
     renderDigest();
+    ui.setAudioState({ capturing: !!state.capture });
+    if (state.query) onSearch(state.query);
+    saveAutoCache();
   }
 
   // 音声から作っている間は、聞き終えた所までが対象(まだ聞いていない後ろを、空の章にしない)
@@ -104,7 +109,7 @@
   }
 
   function rebuild() {
-    state.chapters = Core.buildChapters(effective(), state.cues, analysisDuration());
+    state.chapters = Core.applyTitleOverrides(Core.buildChapters(effective(), state.cues, analysisDuration()), state.titles);
     state.tentative = [];
     recomputeDigest();
     render();
@@ -127,14 +132,14 @@
   }
 
   const ERRORS = {
-    "no-button": "この動画には文字起こしがないようです。ツールバーの ChapterLens のアイコン →「音声から作る」で、音声から作れます(この PC のエンジンが要ります)。",
+    "no-button": "この動画には文字起こしがないようです。下の「音声から作る」ボタンで、音声から作れます(この PC のエンジンが要ります)。",
     timeout: "文字起こしを開けませんでした。ページを読み込み直して、もう一度お試しください。",
     empty: "文字起こしが空でした。",
   };
 
   async function run() {
     if (state.busy) return;
-    if (state.capture) { say("いま音声から作っています。止めるには、ツールバーのアイコンから「停止」を押してください。"); return; }
+    if (state.capture) { say("いま音声から作っています。止めるには、「取り込みを止める」を押してください。"); return; }
     const ui = state.ui;
     state.busy = true;
     ui.setBusy(true);
@@ -208,6 +213,7 @@
     const saved = await store.load(id);
     if (state.videoId !== id) return; // 読み込み中に別の動画へ移った
     state.manual = saved.manual ? saved.manual.boundaries : null;
+    state.titles = saved.titles || [];
     if (saved.digest) { state.digest.custom = saved.digest.spans; state.digest.ratio = saved.digest.ratio || state.digest.ratio; }
   }
 
@@ -478,7 +484,56 @@
       : `音声の取り込みを始めました(${video ? fmt(video.currentTime) : "0:00"} から)。再生すると、30 秒ごとに結果が増えます。`);
   }
 
+  // ---- <video> の音を取り出して、エンジンへ送る係(offscreen)へ渡す。音は再生にそのまま流れ、ファイルには保存しない ----
+  let pcm = null;
+  function toBase64(int16) {
+    const bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  async function startPcm() {
+    stopPcm();
+    const video = videoEl();
+    if (!video || typeof video.captureStream !== "function") throw new Error("この動画ページからは、音を取り出せません。YouTube の動画ページを開き直してください。");
+    const tracks = video.captureStream().getAudioTracks();
+    if (tracks.length === 0) throw new Error("この動画には、取り出せる音がありません(再生を始めてから、もう一度押してください)。");
+    const ctx = new AudioContext();
+    try { await ctx.resume(); } catch (_) { /* 再生の操作の後なら通る */ }
+    const src = ctx.createMediaStreamSource(new MediaStream(tracks));
+    const down = new Capture.Downsampler(ctx.sampleRate, Capture.TARGET_RATE);
+    const node = ctx.createScriptProcessor(4096, 1, 1); // 出力は書かない(無音)。再生の音は、元の <video> がそのまま出す
+    const wallAtZero = Date.now() - ctx.currentTime * 1000;
+    let parts = [], startT = null, count = 0;
+    const flush = () => {
+      if (!parts.length) return;
+      const all = new Int16Array(count);
+      let off = 0;
+      for (const p of parts) { all.set(p, off); off += p.length; }
+      try { chrome.runtime.sendMessage({ target: "offscreen", type: "pcm", t: startT, wallAtZero, b64: toBase64(all) }); } catch (_) { /* 拡張が再読み込みされた */ }
+      parts = []; startT = null; count = 0;
+    };
+    node.onaudioprocess = (e) => {
+      const f = down.process(e.inputBuffer.getChannelData(0));
+      const i16 = new Int16Array(f.length);
+      for (let i = 0; i < f.length; i++) i16[i] = Math.max(-1, Math.min(1, f[i])) * 32767;
+      if (startT === null) startT = e.playbackTime;
+      parts.push(i16); count += i16.length;
+      if (count >= Capture.TARGET_RATE) flush(); // 約 1 秒ごと
+    };
+    src.connect(node);
+    node.connect(ctx.destination);
+    pcm = { ctx, node, src, flush };
+  }
+  function stopPcm() {
+    if (!pcm) return;
+    const p = pcm; pcm = null;
+    try { p.flush(); p.node.onaudioprocess = null; p.src.disconnect(); p.node.disconnect(); p.ctx.close(); } catch (_) { /* 既に閉じている */ }
+    try { chrome.runtime.sendMessage({ target: "offscreen", type: "pcm-end" }); } catch (_) { /* 送れなくても続ける */ }
+  }
+
   function stopCapture(notify) {
+    stopPcm();
     const cap = state.capture;
     if (!cap) return;
     clearInterval(cap.timer);
@@ -544,7 +599,13 @@
   const CAPTURE_ERRORS_STOP = new Set(["auth", "origin"]);
   function onTabMessage(msg) {
     if (!msg || typeof msg.type !== "string" || !msg.type.startsWith("cl-")) return;
-    if (msg.type === "cl-started") { if (isWatch()) startCapture(); return; }
+    if (msg.type === "cl-started") {
+      if (isWatch()) {
+        startCapture();
+        if (msg.relay) startPcm().catch((e) => { say(String((e && e.message) || e), "error"); stopCapture(true); });
+      }
+      return;
+    }
     const cap = state.capture;
     if (!cap) return;
     if (msg.type === "cl-cues") {
@@ -576,14 +637,162 @@
     }
   }
 
+  // ================= パネルからの操作(音声・状態・題名・検索・書き出し・キー・前回の結果) =================
+  // --- 音声から作る(パネルのボタン。接続設定は、保存済みのものを background が使う) ---
+  async function onAudio() {
+    if (state.capture) { stopCapture(true); say("取り込みを止めました。"); state.ui.setAudioState({ capturing: false }); return; }
+    say("音の取り込みを始めています…");
+    let res;
+    try { res = await chrome.runtime.sendMessage({ target: "background", type: "start-from-page" }); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+    if (res && res.ok) return; // 始まると、background から cl-started が届く
+    if (res && res.code === "unconfigured") {
+      say("初回だけ、エンジンの URL と token の設定が要ります。「設定」を押してください(設定したら、もう一度このボタンを押します)。", "error");
+      try { chrome.runtime.sendMessage({ target: "background", type: "open-setup" }); } catch (_) { /* 開けなくても続ける */ }
+      return;
+    }
+    say((res && res.error) || "始められませんでした。エンジンを起動しているか、確かめてください。", "error");
+  }
+  function onOpenSetup() { try { chrome.runtime.sendMessage({ target: "background", type: "open-setup" }); } catch (_) { /* 開けない */ } }
+
+  // --- エンジンの状態(接続・音声認識の用意)。パネルが開いている間だけ、20 秒ごとに確かめる ---
+  let engineTimer = null;
+  async function refreshEngine() {
+    const ui = state.ui;
+    if (!ui) return;
+    const r = await engine.call("GET", "/v1/health");
+    if (r.ok) {
+      const d = r.data || {};
+      const asr = d.asr === false || d.asr_ready === false || d.faster_whisper === false;
+      ui.setEngine("ok", asr ? "エンジン: 接続中(音声認識は未インストール)" : "エンジン: 接続中");
+    } else if (r.code === "unconfigured") ui.setEngine("bad", "エンジン: 未設定(音声から作るときだけ必要)");
+    else ui.setEngine("bad", "エンジン: 未接続(音声・共有を使うときだけ必要。字幕からの目次は、エンジンなしで作れます)");
+  }
+  function watchEngine() {
+    if (engineTimer) return;
+    refreshEngine();
+    engineTimer = setInterval(() => { if (document.hidden || !isWatch()) return; refreshEngine(); }, 20000); // 動画ページを見ている間だけ
+  }
+
+  // --- 題名の直接編集 ---
+  function onTitleEdit(i, text) {
+    const clean = String(text || "").replace(/\s+/g, " ").trim().slice(0, 60);
+    const c = state.chapters[i];
+    if (!c) { render(); return; }
+    state.titles = state.titles.filter((t) => Math.abs(t.start - c.start) > 1);
+    if (clean) state.titles.push({ start: c.start, title: clean });
+    store.saveTitles(state.videoId, state.titles);
+    // 空にしたら、自動の題名に戻す(字幕があれば作り直す。前回の結果だけのときは、上書きだけを外して表示する)
+    if (state.cues && state.cues.length) rebuild();
+    else { state.chapters = Core.applyTitleOverrides(state.chapters.map((x) => (x.custom && Math.abs(x.start - c.start) <= 1 && !clean ? Object.assign({}, x, { custom: false }) : x)), state.titles); render(); }
+    say(clean ? "題名を直しました(この PC のブラウザにだけ保存)。" : "題名を自動に戻しました。");
+  }
+
+  // --- 検索(目次の題名と字幕) ---
+  function onSearch(q) {
+    state.query = String(q || "");
+    const ui = state.ui;
+    if (!state.query.trim()) { ui.setSearchResults(null, fmt, ""); return; }
+    const hits = [];
+    const needle = state.query.normalize("NFKC").toLowerCase().trim();
+    for (const c of state.chapters) if ((c.title || "").normalize("NFKC").toLowerCase().includes(needle)) hits.push({ start: c.start, text: `【章】${c.title}` });
+    hits.push(...Core.searchCues(state.cues || [], state.query, 60));
+    ui.setSearchResults(hits.slice(0, 60), fmt, state.query.trim());
+  }
+
+  // --- 書き出し ---
+  function download(name, text, mime) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.style.display = "none";
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+  async function copyText(text, okMessage) {
+    try { await Promise.race([navigator.clipboard.writeText(text), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 1500))]); say(okMessage); return; } catch (_) { /* 下の方法へ */ }
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.cssText = "position:fixed;left:-9999px;";
+    document.body.append(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) { /* 失敗 */ }
+    ta.remove();
+    say(ok ? okMessage : "コピーできませんでした。", ok ? undefined : "error");
+  }
+  function onExport(kind) {
+    const id = state.videoId || "video";
+    if (kind === "md") {
+      if (state.chapters.length === 0) { say("先に目次を作ってください。", "error"); return; }
+      const url = state.videoId ? `https://www.youtube.com/watch?v=${state.videoId}` : "";
+      const heading = (document.title || "").replace(/ - YouTube$/, "");
+      const text = Core.markdownText(state.chapters, { videoUrl: url, heading });
+      download(`chapters-${id}.md`, text, "text/markdown");
+      copyText(text, "Markdown をダウンロードし、クリップボードにもコピーしました。");
+      return;
+    }
+    if (!state.cues || state.cues.length === 0) { say("字幕がまだありません。先に目次を作ってください。", "error"); return; }
+    if (kind === "srt") download(`subtitles-${id}.srt`, Core.srtText(state.cues), "application/x-subrip");
+    else download(`subtitles-${id}.vtt`, Core.vttText(state.cues), "text/vtt");
+    say("字幕をダウンロードしました。");
+  }
+
+  // --- キー: [ で前の章・] で次の章(入力欄にいるときは動かさない) ---
+  function onKey(e) {
+    if (e.ctrlKey || e.altKey || e.metaKey || (e.key !== "[" && e.key !== "]")) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || ""))) return;
+    const video = videoEl();
+    if (!video || state.chapters.length === 0 || !isWatch()) return;
+    const cur = Core.chapterIndexAt(state.chapters, video.currentTime);
+    let target = cur;
+    if (e.key === "]") target = Math.min(state.chapters.length - 1, cur + 1);
+    else target = video.currentTime - state.chapters[cur].start > 3 ? cur : Math.max(0, cur - 1); // 章の頭から 3 秒以上たっていれば、まず頭へ
+    seek(state.chapters[target].start);
+    say(`${fmt(state.chapters[target].start)} ${state.chapters[target].title || "チャプター"}`);
+    e.preventDefault();
+  }
+
+  // --- 前回の結果: 境界と題名(特徴語)だけを覚えておき、字幕を読む前でも、すぐ目次を出す。字幕そのものは保存しない ---
+  let cacheTimer = null;
+  function saveAutoCache() {
+    if (state.capture || state.live || !state.cues || state.cues.length === 0 || state.manual || !state.videoId) return;
+    clearTimeout(cacheTimer);
+    cacheTimer = setTimeout(() => {
+      const titles = state.chapters.filter((c) => c.title && !c.custom).map((c) => ({ start: c.start, title: c.title }));
+      store.saveAuto(state.videoId, state.auto, titles);
+    }, 1500);
+  }
+  async function restoreCache() {
+    const id = state.videoId;
+    if (!id) return;
+    const saved = await store.load(id);
+    if (state.videoId !== id || state.cues) return; // 別の動画へ移った・もう字幕を読んだ
+    state.titles = saved.titles || [];
+    const bounds = saved.manual ? saved.manual.boundaries : saved.auto ? saved.auto.boundaries : null;
+    if (!bounds || bounds.length === 0) return;
+    const video = videoEl();
+    const dur = video && isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    if (!dur) return;
+    state.duration = dur;
+    const names = saved.auto ? saved.auto.titles : [];
+    const chapters = [0, ...bounds.filter((b) => b > 0 && b < dur)].map((start, i, arr) => ({
+      start, end: i + 1 < arr.length ? arr[i + 1] : dur, snippet: "",
+      title: (names.find((t) => Math.abs(t.start - start) <= 1) || {}).title || "",
+    }));
+    state.chapters = Core.applyTitleOverrides(chapters, state.titles);
+    render();
+    say(`前回の目次を表示しています(${state.chapters.length} 章)。「目次を作る」で、字幕を読み込み直せます。`);
+  }
+
   // ---- 動画が変わったら、前の動画の結果を捨てる ----
   function reset() {
     if (state.capture) stopCapture(true);
     setDigestEnabled(false);
     state.cues = null; state.auto = []; state.manual = null; state.chapters = []; state.tentative = []; state.duration = 0;
     state.videoId = currentVideoId();
+    if (state.ui && state.ui.setVideoId) state.ui.setVideoId(state.videoId); // 章の一覧に、動画のサムネイルを出す
     state.digest.auto = []; state.digest.custom = null; state.digest.ratio = DIGEST_RATIO;
     state.share = { info: null, list: [], overlay: new Set(), mineOff: false };
+    state.titles = []; state.query = "";
     clearMarkers();
     if (!state.ui) return;
     state.ui.setChapters([], Core.formatTimestamp, { editable: false });
@@ -591,7 +800,10 @@
     state.ui.setCanCopy(false);
     state.ui.setRunLabel("目次を作る");
     renderDigest();
+    state.ui.setSearch("");
+    state.ui.setSearchResults(null, fmt, "");
     say("この動画の文字起こしから、話題の切り替えを探します。");
+    restoreCache();
   }
 
   function onNavigate() {
@@ -610,11 +822,14 @@
       onDigestToggle: setDigestEnabled, onDigestRatio: digestRatio, onSpanToggle: spanToggle, onSpanAdd: spanAdd, onDigestReset: digestReset,
       onShareRefresh: guardShare(refreshShare), onSharePublish: guardShare(sharePublish), onShareRevoke: guardShare(shareRevoke),
       onShareOverlay: shareOverlay, onShareAdopt: shareAdopt,
+      onAudio, onOpenSetup, onTitleEdit, onTitleCancel: () => render(), onSearch, onExport,
       onTab: (name) => { if (name === "share") guardShare(refreshShare)(); else if (name === "digest") renderDigest(); },
     });
     state.ui.setGranularity(state.granularity);
     reset();
     document.addEventListener("yt-navigate-finish", onNavigate);
+    document.addEventListener("keydown", onKey);
+    if (chrome.runtime && typeof chrome.runtime.getManifest === "function") watchEngine(); // 本物の拡張の中だけ(状態の表示のための確認)
     try { chrome.runtime.onMessage.addListener(onTabMessage); } catch (_) { /* 拡張の外では使わない */ }
     if (isWatch()) { state.ui.mount(); bindVideo(); }
   }

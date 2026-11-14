@@ -100,7 +100,7 @@ test("エンジンの中継の許可リスト: 音声(/v1/transcribe)・/v1/dete
   const bg = readFileSync(join(root, "src/background.js"), "utf-8");
   const table = bg.slice(bg.indexOf("const ENGINE_ROUTES"), bg.indexOf("async function hasOffscreen"));
   for (const bad of ["transcribe", "detect", "corrections"]) assert.ok(!table.includes(bad), bad);
-  assert.equal((table.match(/\["(GET|POST)", \//g) || []).length, 13);
+  assert.equal((table.match(/\["(GET|POST)", \//g) || []).length, 14); // 13 + 読み取りだけの /v1/health(エンジンの状態表示)
   assert.ok(table.includes("(local|u_[0-9a-f]{8})"));
 });
 

@@ -188,3 +188,25 @@ test("ui: 共有の入力(共有先・題名のチェック)は、「重ねる�
   assert.equal(audience.value, "u_bbbbbbbb");
   assert.equal(titles.checked, true);
 });
+
+test("ui: 動画 ID を渡すと、章の行にサムネイル(i.ytimg.com)が付く。不正な ID は無視する", () => {
+  const p = panel();
+  p.api.setVideoId("dQw4w9WgXcQ");
+  p.api.setChapters([{ start: 0, title: "はじめに" }, { start: 60, title: "つづき" }], fmt, { editable: false });
+  const imgs = p.shadow.all((n) => n.tagName === "IMG");
+  assert.equal(imgs.length, 2);
+  assert.equal(imgs[0].getAttribute("src"), "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg");
+  p.api.setVideoId('x"><script>');
+  p.api.setChapters([{ start: 0, title: "はじめに" }], fmt, { editable: false });
+  assert.equal(p.shadow.all((n) => n.tagName === "IMG").length, 0); // 形の合わない ID では、画像を作らない
+});
+
+test("ui: たたむボタンで、タブと中身が隠れ、もう一度で戻る(右の列に組み込んだときの操作)", () => {
+  const p = panel();
+  p.api.mount();
+  const wrap = p.shadow.all((n) => n.className.split(" ").includes("wrap"))[0];
+  p.api.toggleCollapse();
+  assert.ok(wrap.classList.contains("collapsed"));
+  p.api.toggleCollapse();
+  assert.ok(!wrap.classList.contains("collapsed"));
+});
