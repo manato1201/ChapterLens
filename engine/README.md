@@ -17,6 +17,7 @@
 | ダイジェスト(重要区間) | `digest` `digest-eval` | 動画は切り出さない |
 | ライブの再生・評価 | `live` `live-eval` | 暫定 → 確定 |
 | 書き出し(自分の動画だけ) | `export edl\|chapters-edl\|subtitles\|video\|short` | `--own` が要る |
+| 記憶へ(DevRAG の任意の namespace) | `rag-export` | 題名・時刻だけ。**既定はプレビュー**、`--send` で送る。鍵は環境変数 |
 
 ## クイックスタート
 
@@ -74,6 +75,12 @@ uv run python -m chapterlens admin audit -n 50         # 監査ログの末尾
 ```bash
 uv run python -m chapterlens export edl captions.vtt --clip-name talk.mp4 --out digest.edl
 uv run python -m chapterlens export short talk.mp4 captions.vtt --own --out short.mp4   # 縦 1080x1920・字幕を焼き込み
+
+# 区間データの題名・時刻だけを、DevRAG(RAG Chat の記憶)へ。まずプレビュー(送らない)
+uv run python -m chapterlens rag-export segments.json --namespace shared:video-notes --label talk-2026-11
+# 送る(鍵は環境変数。URL は https か、この PC の http://127.0.0.1 だけ)
+$env:CHAPTERLENS_RAG_KEY = "<DevRAG の API キー>"
+uv run python -m chapterlens rag-export segments.json --namespace shared:video-notes --label talk-2026-11 --send --url https://<あなたの Worker>
 ```
 
 動画を触る `video` / `short` は、**`--own`(自分の動画・許諾済みの素材)が無いと動かない**。入力はこの PC のファイルだけ(URL は拒否)。CLI だけで、HTTP・拡張には出していない。要 `ffmpeg`。

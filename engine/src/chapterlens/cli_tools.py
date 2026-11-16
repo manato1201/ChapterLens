@@ -155,6 +155,38 @@ def _captions_args(p: argparse.ArgumentParser, *, ratio: bool = True) -> None:
         p.add_argument("--ratio", type=float, default=DEFAULT_RATIO, help="ダイジェストに使う長さの割合(既定 0.2)")
 
 
+def _cmd_rag_export(args: argparse.Namespace) -> int:
+    """区間データの題名・時刻だけを、DevRAG の任意の namespace へ(既定はプレビュー。--send で送る)。"""
+    from . import rag_export as rx
+
+    try:
+        doc = json.loads(Path(args.segments).read_text(encoding="utf-8"))
+        chunks = rx.build_chunks(doc, args.namespace, args.label, include_untitled=args.include_untitled)
+        if not args.send:
+            for c in chunks:
+                print(f"--- {c['namespace']} / {c['file']}")
+                print(c["text"])
+            print(f"\n{len(chunks)} 件をプレビューしました。送るには --send を付けて、--url と環境変数 {args.key_env} を指定してください", file=sys.stderr)
+            return 0
+        if not args.url:
+            raise rx.RagExportError("--url(DevRAG の Worker の URL)が必要です")
+        result = rx.send(chunks, args.url, rx.read_key(args.key_env))
+    except (rx.RagExportError, OSError, ValueError) as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+    _audit_rag_export(len(chunks), args.namespace)
+    print(f"{len(chunks)} 件を {args.namespace} へ送りました({json.dumps(result, ensure_ascii=False)[:200]})")
+    return 0
+
+
+def _audit_rag_export(count: int, namespace: str) -> None:
+    """送ったことを監査ログに残す(件数と namespace だけ。題名・URL・鍵は残さない)。"""
+    from .audit import AuditLog
+    from .server import default_home
+
+    AuditLog(default_home() / "audit.log").event("cli", "rag_export", chunks=count, namespace=namespace)
+
+
 def register(sub) -> None:
     g = sub.add_parser("digest", help="ダイジェスト(重要な区間のリスト)を作る。動画は切り出さない")
     _captions_args(g)
@@ -165,6 +197,16 @@ def register(sub) -> None:
     ge.add_argument("dataset")
     ge.add_argument("--ratio", type=float, default=DEFAULT_RATIO)
     ge.set_defaults(func=_cmd_digest_eval)
+
+    rx = sub.add_parser("rag-export", help="区間データの題名・時刻だけを、DevRAG の任意の namespace へ送る(既定はプレビュー)")
+    rx.add_argument("segments", help="detect が作った区間データ(JSON)")
+    rx.add_argument("--namespace", required=True, help="送り先の namespace(例 shared:video-notes / personal:<自分の ID>)")
+    rx.add_argument("--label", help="動画の呼び名(省略すると、区間データの source.id)。URL は入れない")
+    rx.add_argument("--include-untitled", action="store_true", help="題名のない区間も送る(既定は、題名のある区間だけ)")
+    rx.add_argument("--send", action="store_true", help="実際に送る(付けなければ、プレビューだけ)")
+    rx.add_argument("--url", help="DevRAG の Worker の URL(https。この PC の http://127.0.0.1 も可)")
+    rx.add_argument("--key-env", default="CHAPTERLENS_RAG_KEY", help="API キーを入れた環境変数の名前")
+    rx.set_defaults(func=_cmd_rag_export)
 
     lv = sub.add_parser("live", help="字幕を時間順に流し込んで、ライブ検出の暫定・確定の印を見る")
     lv.add_argument("captions")
