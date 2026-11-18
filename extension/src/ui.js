@@ -138,9 +138,16 @@
       li.row:hover .time { animation: cl-hop .24s cubic-bezier(.16,1,.3,1); }
       /* エンジンにつながったら、緑の点が 1 回だけ広がる */
       .dot.ok { animation: cl-ping .6s cubic-bezier(.16,1,.3,1); }
+      /* 「目次」ボタンでパネルを開くと、下から小さく現れる(右の列に組み込んだ表示は、いつも見えているので動かさない) */
+      .wrap:not(.docked) .panel { animation: cl-rise .24s cubic-bezier(.16,1,.3,1) both; }
+      /* タブを切り替えると、開いた面が小さく現れる(どれが切り替わったかが分かる) */
+      [role="tabpanel"] { animation: cl-rise .2s cubic-bezier(.16,1,.3,1) both; }
+      /* 失敗の表示は、横に小さく震えて、気づかせる(1 回) */
+      .status.error { animation: cl-shake .32s cubic-bezier(.4,0,.2,1); }
     }
     @keyframes cl-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @keyframes cl-hop { 0% { transform: none; } 40% { transform: translateY(-2px) scale(1.06); } 100% { transform: none; } }
+    @keyframes cl-shake { 0%, 100% { transform: none; } 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(2px); } }
     @keyframes cl-ping { 0% { transform: scale(.4); opacity: .4; } 60% { transform: scale(1.35); opacity: 1; } 100% { transform: scale(1); } }
   `;
 
@@ -356,7 +363,12 @@
         for (const [k, b] of tabButtons) b.setAttribute("aria-selected", String(k === name));
         call("onTab", name);
       },
-      setStatus(text, kind) { status.textContent = text; status.className = "status" + (kind === "error" ? " error" : ""); },
+      setStatus(text, kind) {
+        const again = kind === "error" && status.className === "status error" && status.textContent !== text; // 別の失敗が続いたときも、もう一度震わせる
+        if (again) { status.className = "status"; void status.offsetWidth; }
+        status.textContent = text;
+        status.className = "status" + (kind === "error" ? " error" : "");
+      },
       setBusy(busy) { runBtn.disabled = busy; for (const b of segButtons.values()) b.disabled = busy; },
       setRunLabel(text) { runBtn.textContent = text; },
       setGranularity(key) { for (const [k, b] of segButtons) b.setAttribute("aria-pressed", String(k === key)); },
