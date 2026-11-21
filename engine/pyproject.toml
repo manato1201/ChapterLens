@@ -2,6 +2,7 @@
 name = "chapterlens"
 version = "0.1.0"
 description = "ChapterLens engine: caption-based chapter detection and an evaluation harness (CH0)"
+license = { text = "PolyForm-Noncommercial-1.0.0" }
 requires-python = ">=3.12"
 dependencies = []
 
