@@ -36,6 +36,9 @@ const SHIM = `<script>
           if (m.target !== "background" || m.type !== "engine") return;
           window.__engineLog.push({ method: m.method, path: m.path, body: m.body });
           if (m.path === "/v1/me") return { ok: true, status: 200, data: { user: { id: "u_aaaaaaaa", name: "alice", role: "user" }, share_mode: "team" } };
+          // 題名・大見出し(ローカル LLM)の擬似の返事: 章の字幕の長さを題名に入れて、順に「N 番目の話をする」を返す
+          if (m.path === "/v1/title") { window.__titleN = (window.__titleN || 0) + 1; await new Promise((r) => setTimeout(r, 250)); return { ok: true, status: 200, data: { title: window.__titleN + " 番目の話をする(模擬)", title_by: "llm", rejected: 0 } }; }
+          if (m.path === "/v1/sections") { const n = m.body.titles.length, mid = Math.ceil(n / 2); return { ok: true, status: 200, data: { sections: [{ heading: "前半のまとまり", from: 0, to: mid - 1 }, { heading: "後半のまとまり", from: mid, to: n - 1 }], rejected: 0 } }; }
           if (m.path.startsWith("/v1/shares?video=")) return { ok: true, status: 200, data: { shares: [
             { from: "bob", mine: false, boundaries: [190, 395, 760, 1210, 1520], titles: null },
             { from: "carol", mine: false, boundaries: [200, 600, 1300], titles: null } ] } };
@@ -69,7 +72,7 @@ const page = (
 .player{position:relative;width:640px;height:360px;background:#000;margin:20px}
 .ytp-progress-bar{position:absolute;left:0;right:0;bottom:0;height:5px;background:#555}
 #info{margin:20px}</style></head><body>
-<div class="player"><video class="html5-main-video" width="640" height="360"></video><div class="ytp-progress-bar"></div></div>
+<div class="player" id="movie_player"><video class="html5-main-video" width="640" height="360"></video><div class="ytp-progress-bar"></div></div>
 <div id="info">
   <div id="description"><tp-yt-paper-button id="expand">もっと見る</tp-yt-paper-button>
   ${variant === "notranscript" ? "" : `<ytd-video-description-transcript-section-renderer><button id="show">文字起こしを表示</button></ytd-video-description-transcript-section-renderer>`}</div>
@@ -94,7 +97,7 @@ const page = (
   window.mockNavigate = (v) => { history.pushState({}, '', '/watch?v=' + v); document.dispatchEvent(new Event('yt-navigate-finish')); };
 </script>
 ${variant === "shim" ? SHIM : ""}
-<script src="/src/core.js"></script><script src="/src/capture.js"></script><script src="/src/store.js"></script><script src="/src/engine.js"></script><script src="/src/transcript.js"></script><script src="/src/ui.js"></script><script src="/src/content.js"></script>
+<script src="/src/core.js"></script><script src="/src/capture.js"></script><script src="/src/store.js"></script><script src="/src/engine.js"></script><script src="/src/transcript.js"></script><script src="/src/telop.js"></script><script src="/src/ui.js"></script><script src="/src/content.js"></script>
 </body></html>`;
 
 createServer((req, res) => {

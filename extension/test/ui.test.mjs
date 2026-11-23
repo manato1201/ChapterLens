@@ -210,3 +210,95 @@ test("ui: たたむボタンで、タブと中身が隠れ、もう一度で戻�
   p.api.toggleCollapse();
   assert.ok(!wrap.classList.contains("collapsed"));
 });
+
+// ---- 題名・大見出し(ローカル LLM) ----
+const isSec = (n) => n.tagName === "LI" && n.className.split(/\s+/).includes("sec");
+
+test("ui: 大見出し — 見出しの最初の章の前に見出しの行を出す。章の行(data-index)は増えず、強調は見出しの行に付かない", () => {
+  const p = panel();
+  const chapters = [
+    { start: 0, title: "導入", section: 0 }, { start: 60, title: "第二", section: 0 }, { start: 125, title: "第三", section: 1 },
+  ];
+  p.api.setChapters(chapters, fmt, { editable: false, sections: [{ heading: "前半", from: 0, to: 1 }, { heading: "後半", from: 2, to: 2 }] });
+  const v = view(p, "目次");
+  assert.deepEqual(v.all(isSec).map((n) => n.textContent), ["前半", "後半"]);
+  assert.equal(v.all((n) => n.tagName === "LI" && n.getAttribute("data-index") !== null).length, 3);
+  p.api.setCurrent(0);
+  assert.ok(v.all(isSec).every((n) => !n.className.split(/\s+/).includes("current")));
+  const order = v.all((n) => n.tagName === "LI").map((n) => (isSec(n) ? "S" : "C"));
+  assert.deepEqual(order, ["S", "C", "C", "S", "C"]);
+});
+
+test("ui: 大見出しが無い(sections なし・空)ときは、見出しの行を出さない", () => {
+  const p = panel();
+  p.api.setChapters([{ start: 0, title: "導入" }, { start: 60, title: "第二" }], fmt, { editable: false });
+  assert.equal(view(p, "目次").all(isSec).length, 0);
+  p.api.setChapters([{ start: 0, title: "導入", section: null }], fmt, { editable: false, sections: [] });
+  assert.equal(view(p, "目次").all(isSec).length, 0);
+});
+
+test("ui: 「題名を付ける(ローカル LLM)」— 章があるときだけ押せる・押すと onTitles", () => {
+  const p = panel();
+  const b = buttonByText(p.shadow, "題名を付ける(ローカル LLM)");
+  assert.equal(b.disabled, true); // 章がまだ無い
+  p.api.setChapters([{ start: 0, title: "導入" }, { start: 60, title: "第二" }], fmt, { editable: true });
+  assert.equal(b.disabled, false);
+  b.click();
+  assert.deepEqual(p.calls.at(-1), ["onTitles"]);
+  p.api.setChapters([{ start: 0, title: "導入" }], fmt, { editable: false }); // 取り込み中・ライブ中
+  assert.equal(b.disabled, true);
+});
+
+test("ui: 題名付けの実行中 — 進み具合「12 / 48 章」・止めるボタン(onTitlesStop)・開始ボタンは押せない", () => {
+  const p = panel();
+  p.api.setChapters([{ start: 0, title: "導入" }, { start: 60, title: "第二" }], fmt, { editable: true });
+  const start = buttonByText(p.shadow, "題名を付ける(ローカル LLM)");
+  const stop = buttonByText(p.shadow, "止める");
+  assert.equal(stop.hidden, true);
+  p.api.setTitleProgress({ running: true, done: 12, total: 48 });
+  assert.match(view(p, "目次").textContent, /12 \/ 48 章/);
+  assert.equal(stop.hidden, false);
+  assert.equal(start.disabled, true);
+  stop.click();
+  assert.deepEqual(p.calls.at(-1), ["onTitlesStop"]);
+  p.api.setTitleProgress({ running: false });
+  assert.equal(stop.hidden, true);
+  assert.equal(start.disabled, false);
+  assert.doesNotMatch(view(p, "目次").textContent, /\/ 48 章/);
+});
+
+test("ui: テロップの切り替え(章の切り替えで出す / 常に出す / 出さない)— 押すと onTelopMode・setTelopMode で選択が変わる", () => {
+  const p = panel();
+  const labels = ["章の切り替え", "常に", "出さない"];
+  const btns = labels.map((t) => buttonByText(p.shadow, t));
+  assert.ok(btns.every(Boolean));
+  p.api.setTelopMode("change");
+  assert.deepEqual(btns.map((b) => b.getAttribute("aria-pressed")), ["true", "false", "false"]);
+  btns[1].click();
+  assert.deepEqual(p.calls.at(-1), ["onTelopMode", "always"]);
+  p.api.setTelopMode("always");
+  assert.deepEqual(btns.map((b) => b.getAttribute("aria-pressed")), ["false", "true", "false"]);
+  btns[2].click();
+  assert.deepEqual(p.calls.at(-1), ["onTelopMode", "off"]);
+  p.api.setTelopMode("nonsense"); // 知らない値は無視
+  assert.deepEqual(btns.map((b) => b.getAttribute("aria-pressed")), ["false", "true", "false"]);
+});
+
+// ---- 最終レビューの指摘(I6: 題名を直している最中に、一覧を作り直さない) ----
+test("ui: 題名を直している最中は、一覧の再描画で入力欄を消さない。確定のあとは、また描画できる", () => {
+  const p = panel();
+  const chapters = [{ start: 0, title: "導入" }, { start: 60, title: "第二" }];
+  p.api.setChapters(chapters, fmt, { editable: true });
+  p.api.editTitle(0);
+  const inputs = () => view(p, "目次").all((n) => n.tagName === "INPUT" && n.className.includes("titleedit"));
+  assert.equal(inputs().length, 1);
+  const input = inputs()[0];
+  p.api.setChapters([{ start: 0, title: "ローカル LLM の題名" }, { start: 60, title: "第二の題名" }], fmt, { editable: true }); // 題名付けの途中の更新
+  assert.equal(inputs().length, 1, "入力欄が残る");
+  assert.equal(inputs()[0], input, "同じ入力欄");
+  input.dispatch("blur"); // 確定 → onTitleEdit
+  assert.deepEqual(p.calls.at(-1).slice(0, 2), ["onTitleEdit", 0]);
+  p.api.setChapters([{ start: 0, title: "確定後の題名" }, { start: 60, title: "第二" }], fmt, { editable: true });
+  assert.equal(inputs().length, 0);
+  assert.match(view(p, "目次").textContent, /確定後の題名/);
+});

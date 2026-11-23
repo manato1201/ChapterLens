@@ -44,6 +44,33 @@
     return out;
   }
 
+  const MAX_SECTIONS = 100;
+  const MAX_INDEX = 10000;
+
+  /** 大見出し [{heading, from, to}]。形が違えば null。見出しは 60 文字まで。 */
+  function cleanSections(list) {
+    if (!Array.isArray(list) || list.length > MAX_SECTIONS) return null;
+    const out = [];
+    for (const s of list) {
+      if (!s || typeof s.heading !== "string" || !Number.isInteger(s.from) || !Number.isInteger(s.to)) return null;
+      if (s.from < 0 || s.to < s.from || s.to > MAX_INDEX) return null;
+      const heading = Array.from(s.heading.replace(/\s+/g, " ").trim()).slice(0, 60).join("");
+      if (!heading) return null;
+      out.push({ heading, from: s.from, to: s.to });
+    }
+    return out;
+  }
+
+  /** ローカル LLM が作った題名と大見出し(+ 見出しを作ったときの章の開始時刻 starts。章立てが変わったら見出しを使わない判定に使う)。壊れていれば null。 */
+  function cleanGenerated(g) {
+    if (!g || typeof g !== "object") return null;
+    const titles = cleanTitles(g.titles), sections = cleanSections(g.sections);
+    if (!titles || !sections) return null;
+    if (g.starts === undefined || g.starts === null) return { titles, sections };
+    const starts = cleanBoundaries(g.starts);
+    return starts ? { titles, sections, starts } : null;
+  }
+
   function cleanSpans(list) {
     if (!Array.isArray(list) || list.length > MAX_SPANS) return null;
     const out = [];
@@ -104,6 +131,7 @@
             };
         }
         if (v.titles) { const t = cleanTitles(v.titles); if (t) out.titles = t; }
+        if (v.generated) { const g = cleanGenerated(v.generated); if (g) out.generated = g; }
         if (v.auto) {
           const b = cleanBoundaries(v.auto.boundaries), t = cleanTitles(v.auto.titles || []);
           if (b && t) out.auto = { boundaries: b, titles: t, at: v.auto.at };
@@ -149,6 +177,10 @@
         const t = cleanTitles(titles);
         return t ? write(videoId, { titles: t.length ? t : null }) : false;
       },
+      async saveGenerated(videoId, titles, sections, starts) {
+        const g = cleanGenerated({ titles, sections, starts });
+        return g ? write(videoId, { generated: g }) : false;
+      },
       async saveAuto(videoId, boundaries, titles) {
         const b = cleanBoundaries(boundaries), t = cleanTitles(titles || []);
         if (!b || !t) return false;
@@ -175,5 +207,5 @@
     };
   }
 
-  return { create, cleanBoundaries, cleanSpans, cleanTitles, VIDEO_ID, PREFIX };
+  return { create, cleanBoundaries, cleanSpans, cleanTitles, cleanSections, VIDEO_ID, PREFIX };
 });

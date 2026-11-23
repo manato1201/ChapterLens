@@ -53,7 +53,7 @@ test("manifest: key から作った拡張 ID が、文書の ID と一致する"
 test("manifest: 読み込む JS・HTML がすべて存在し、依存が content より先", () => {
   const js = manifest.content_scripts[0].js;
   for (const f of [...js, manifest.background.service_worker, manifest.action.default_popup, "src/offscreen.html", "src/offscreen.js", "src/pcm-worklet.js", "src/admin.html", "src/admin.js"]) assert.ok(existsSync(join(root, f)), f);
-  for (const dep of ["core", "capture", "store", "engine", "transcript", "ui"]) assert.ok(js.indexOf(`src/${dep}.js`) >= 0 && js.indexOf(`src/${dep}.js`) < js.indexOf("src/content.js"), dep);
+  for (const dep of ["core", "capture", "store", "engine", "transcript", "telop", "ui"]) assert.ok(js.indexOf(`src/${dep}.js`) >= 0 && js.indexOf(`src/${dep}.js`) < js.indexOf("src/content.js"), dep);
   assert.equal(js.at(-1), "src/content.js");
 });
 
@@ -100,8 +100,20 @@ test("エンジンの中継の許可リスト: 音声(/v1/transcribe)・/v1/dete
   const bg = readFileSync(join(root, "src/background.js"), "utf-8");
   const table = bg.slice(bg.indexOf("const ENGINE_ROUTES"), bg.indexOf("async function hasOffscreen"));
   for (const bad of ["transcribe", "detect", "corrections"]) assert.ok(!table.includes(bad), bad);
-  assert.equal((table.match(/\["(GET|POST)", \//g) || []).length, 14); // 13 + 読み取りだけの /v1/health(エンジンの状態表示)
+  assert.equal((table.match(/\["(GET|POST)", \//g) || []).length, 16); // 13 + 読み取りだけの /v1/health + 題名・大見出し(/v1/title・/v1/sections の POST だけ)
   assert.ok(table.includes("(local|u_[0-9a-f]{8})"));
+  const BS = String.fromCharCode(92); // バックスラッシュ(表の中の正規表現の「\/」)
+  const route = (m, name) => `["${m}", /^${BS}/v1${BS}/${name}`;
+  assert.ok(table.includes(route("POST", "title") + "$/]") && table.includes(route("POST", "sections") + "$/]"));
+  assert.ok(!table.includes(route("GET", "title")) && !table.includes(route("GET", "sections")), "題名・大見出しは GET では通さない");
+});
+
+test("エンジンの中継: 題名・大見出しの 2 経路だけ、待ち時間が 300 秒(他は 15 秒のまま)", () => {
+  const bg = readFileSync(join(root, "src/background.js"), "utf-8");
+  assert.match(bg, /const ENGINE_TIMEOUT_MS = 15000;/);
+  assert.match(bg, /const ENGINE_LLM_TIMEOUT_MS = 300000;/);
+  assert.ok(bg.includes("const LLM_PATH = /^\\/v1\\/(title|sections)$/;"));
+  assert.match(bg, /setTimeout\(\(\) => ctl\.abort\(\), LLM_PATH\.test\(path\) \? ENGINE_LLM_TIMEOUT_MS : ENGINE_TIMEOUT_MS\)/);
 });
 
 test("外部の URL を読み込まない(HTML も)・HTML にインラインのスクリプトがない(CSP)", () => {

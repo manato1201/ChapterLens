@@ -93,7 +93,8 @@ flowchart TD
 |---|---|
 | `chapterlens.engine` | エンジンの URL・token・言語(popup が保存) |
 | `chapterlens.granularity` | 粒度 |
-| `chapterlens.v.<動画 ID>` | その動画の調整(`manual` / `digest` / `titles` / `auto`)。時刻と、利用者が付けた題名・特徴語の題名まで(**字幕そのものは保存しない**) |
+| `chapterlens.v.<動画 ID>` | その動画の調整(`manual` / `digest` / `titles` / `generated` / `auto`)。時刻と、利用者が付けた題名・特徴語の題名・ローカル LLM が付けた題名と大見出し(`generated`)まで(**字幕そのものは保存しない**) |
+| `chapterlens.telop` | テロップの出し方(`change` / `always` / `off`) |
 | `chapterlens.index` | 動画 ID の新しい順(100 本を超えると古いものを消す) |
 
 ## 3.5 ライブ

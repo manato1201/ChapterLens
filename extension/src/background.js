@@ -13,6 +13,9 @@ importScripts("capture.js"); // 自分のファイルだけ。validateServerUrl 
 const OFFSCREEN_URL = "src/offscreen.html";
 const ENGINE_KEY = "chapterlens.engine";
 const ENGINE_TIMEOUT_MS = 15000;
+// 題名・大見出し(ローカル LLM)は、窓口が 1 件ずつ処理するので長い(他の経路は 15 秒のまま)
+const ENGINE_LLM_TIMEOUT_MS = 300000;
+const LLM_PATH = /^\/v1\/(title|sections)$/;
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const ENGINE_ROUTES = [
   ["GET", /^\/v1\/health$/],
@@ -29,6 +32,8 @@ const ENGINE_ROUTES = [
   ["GET", /^\/v1\/admin\/settings$/],
   ["POST", /^\/v1\/admin\/settings$/],
   ["GET", /^\/v1\/admin\/audit(\?n=\d{1,3})?$/],
+  ["POST", /^\/v1\/title$/],
+  ["POST", /^\/v1\/sections$/],
 ];
 
 async function hasOffscreen() {
@@ -77,7 +82,7 @@ async function engineCall(msg, sender) {
     if (body.length > MAX_BODY_BYTES) return { ok: false, code: "too-large", error: "送る内容が大きすぎます" };
   }
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), ENGINE_TIMEOUT_MS);
+  const timer = setTimeout(() => ctl.abort(), LLM_PATH.test(path) ? ENGINE_LLM_TIMEOUT_MS : ENGINE_TIMEOUT_MS);
   try {
     const res = await fetch(base + path, {
       method,

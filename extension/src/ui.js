@@ -41,6 +41,9 @@
     ol, ul { list-style: none; margin: 0; padding: 0 0 4px; }
     .chapters { overflow-y: auto; flex: 1 1 auto; }
     li.row { display: flex; align-items: stretch; }
+    li.sec { margin: 8px 12px 2px; padding: 2px 0; font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--accent); border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+    .titles { display: flex; align-items: center; gap: 8px; margin: 0 12px 10px; flex-wrap: wrap; }
+    .titles .prog { color: var(--muted); font-variant-numeric: tabular-nums; }
     li.row > button.chap, li.row > button.go { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: 5.2em 1fr; gap: 8px; text-align: left; border: 0; background: none; padding: 6px 12px; }
     li.row > button.chap:hover, li.row > button.go:hover { background: var(--hl); }
     li.current > button.chap { background: var(--hl); font-weight: 600; }
@@ -172,6 +175,8 @@
    *           onChapterRemove(i) / onChapterNudge(i, deltaS) / onChapterAdd() / onManualReset()
    *           onDigestToggle(on) / onDigestRatio(r) / onSpanToggle(i) / onSpanAdd() / onDigestReset()
    *           onShareRefresh() / onSharePublish({audience, withTitles}) / onShareRevoke() / onShareOverlay(i, on) / onShareAdopt(i) / onTab(name)
+   *           onTelopMode(mode)  (テロップ: change / always / off。選択の表示は api.setTelopMode)
+   *           onTitles() / onTitlesStop()  (題名・大見出しをローカル LLM で付ける。進み具合は api.setTitleProgress)
    * granularities: [{key, label}]
    */
   function createPanel(doc, granularities, handlers) {
@@ -185,6 +190,12 @@
     // ---- タブ 1: 目次 ----
     const status = h(doc, "div", { class: "status", role: "status", "aria-live": "polite" });
     const runBtn = h(doc, "button", { class: "primary", type: "button", text: "目次を作る", onclick: () => call("onRun") });
+    const titlesBtn = h(doc, "button", { class: "secondary", type: "button", text: "題名を付ける(ローカル LLM)", ".disabled": true, onclick: () => call("onTitles") });
+    const titleProg = h(doc, "span", { class: "prog", "aria-live": "polite" });
+    const stopBtn = h(doc, "button", { class: "mini", type: "button", text: "止める", ".hidden": true, onclick: () => call("onTitlesStop") });
+    const titlesRow = h(doc, "div", { class: "titles" }, [titlesBtn, titleProg, stopBtn]);
+    let titlesEditable = false, titlesRunning = false;
+    const syncTitlesBtn = () => { titlesBtn.disabled = !titlesEditable || titlesRunning; };
     const list = h(doc, "ol", { class: "chapters", "aria-label": "章の一覧" });
     let listHadRows = false;
     const engineDot = h(doc, "span", { class: "dot" });
@@ -213,9 +224,16 @@
       segButtons.set(g.key, b);
       gran.append(b);
     }
+    const telopButtons = new Map();
+    const telopSeg = h(doc, "div", { class: "gran", role: "group", "aria-label": "テロップ" }, [h(doc, "span", { text: "テロップ" })]);
+    for (const [mode, label] of [["change", "章の切り替え"], ["always", "常に"], ["off", "出さない"]]) {
+      const b = h(doc, "button", { class: "seg", type: "button", text: label, "aria-pressed": "false", onclick: () => call("onTelopMode", mode) });
+      telopButtons.set(mode, b);
+      telopSeg.append(b);
+    }
     const note = h(doc, "div", { class: "note", text: "字幕の言葉の変化から自動で作ります。位置は数秒ずれることがあります。−5 / +5 / × で直せます(この PC のブラウザにだけ保存)。" });
     const chaptersView = h(doc, "section", { class: "view", role: "tabpanel", "aria-label": "目次" }, [
-      engineRow, gran, status, runBtn, audioBtn, searchRow, results, list, exportRow, note, h(doc, "div", { class: "bar" }, [addBtn, resetBtn, copyBtn]), // 操作は、いつも下に見えている(スクロールしなくてよい)
+      engineRow, gran, telopSeg, status, runBtn, titlesRow, audioBtn, searchRow, results, list, exportRow, note, h(doc, "div", { class: "bar" }, [addBtn, resetBtn, copyBtn]), // 操作は、いつも下に見えている(スクロールしなくてよい)
     ]);
 
     // ---- タブ 2: ダイジェスト ----
@@ -373,15 +391,23 @@
       setRunLabel(text) { runBtn.textContent = text; },
       setGranularity(key) { for (const [k, b] of segButtons) b.setAttribute("aria-pressed", String(k === key)); },
       setCanCopy(ok) { copyBtn.disabled = !ok; },
+      /** テロップの出し方(change / always / off)の選択を表示する。知らない値は無視。 */
+      setTelopMode(mode) { if (!telopButtons.has(mode)) return; for (const [k, b] of telopButtons) b.setAttribute("aria-pressed", String(k === mode)); },
       /** opts: { editable: 章を直せるか, tentative: 暫定の章の番号の配列 } */
       setChapters(chapters, formatTime, opts) {
+        // 題名を直している最中(入力欄がある)は、一覧を作り直さない(題名付けの途中の更新で、入力が消えるため)。確定・取り消しのあとに再描画される
+        if (chapters.length > 0 && list.querySelector(".titleedit")) return;
         const o = opts || {};
         const tent = new Set(o.tentative || []);
         // 章が「無いところから、できた」とき(最初の 1 回)だけ、現れる動きを付ける。30 秒ごとの更新では、動かさない
         list.className = "chapters" + (!listHadRows && chapters.length ? " enter" : "");
         listHadRows = chapters.length > 0;
         list.replaceChildren();
+        titlesEditable = !!o.editable && chapters.length > 0;
+        syncTitlesBtn();
+        const headingAt = new Map((o.sections || []).map((s) => [s.from, s.heading]));
         chapters.forEach((c, i) => {
+          if (headingAt.has(i)) list.append(h(doc, "li", { class: "sec", role: "presentation", text: headingAt.get(i) }));
           const row = h(doc, "li", { class: "row", "data-index": String(i) }, [
             h(doc, "button", { class: "chap", type: "button", onclick: () => call("onSeek", c.start) }, [
               thumbEl(),
@@ -406,10 +432,19 @@
         });
         addBtn.disabled = !o.editable;
       },
+      /** v: { running, done, total }。実行中は進み具合と「止める」を出し、開始ボタンを押せなくする。 */
+      setTitleProgress(v) {
+        const s = v || {};
+        titlesRunning = !!s.running;
+        titleProg.textContent = titlesRunning ? `${s.done || 0} / ${s.total || 0} 章` : "";
+        stopBtn.hidden = !titlesRunning;
+        syncTitlesBtn();
+      },
       setManual(isManual) { resetBtn.hidden = !isManual; },
       setCurrent(index) {
         let cur = null;
         list.querySelectorAll("li").forEach((li) => {
+          if (li.classList.contains("sec")) return; // 大見出しの行は、強調しない
           const on = Number(li.getAttribute("data-index")) === index;
           li.classList.toggle("current", on);
           if (on) cur = li;
@@ -431,7 +466,7 @@
         const current = t.firstChild && t.firstChild.textContent !== undefined ? t.firstChild.textContent : t.textContent || ""; // 「仮」の印は含めない
         const input = h(doc, "input", { class: "titleedit", type: "text", maxlength: "60", "aria-label": "章の題名", ".value": current });
         let finished = false; // Enter の後に blur も来るので、確定・取り消しは 1 回だけ
-        const done = (commit) => { if (finished) return; finished = true; if (commit) call("onTitleEdit", i, input.value); else call("onTitleCancel"); };
+        const done = (commit) => { if (finished) return; finished = true; input.classList.toggle("titleedit", false); /* 確定後の再描画を、止めない */ if (commit) call("onTitleEdit", i, input.value); else call("onTitleCancel"); };
         input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") done(true); else if (e.key === "Escape") done(false); });
         input.addEventListener("blur", () => done(true));
         input.addEventListener("click", (e) => e.stopPropagation());

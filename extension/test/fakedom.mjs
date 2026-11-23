@@ -91,9 +91,21 @@ export class FakeEl {
     return out;
   }
   querySelectorAll(sel) {
-    if (/^[a-z]+$/i.test(sel))
-      return this.all((n) => n.tagName === sel.toUpperCase() && n !== this);
-    throw new Error("偽 DOM が対応していない selector: " + sel);
+    // 対応する形: tag / .class / tag.class / tag[attr="値"](ui.js が使う範囲だけ)
+    const m = /^([a-z]*)(?:\.([\w-]+))?(?:\[([\w-]+)="([^"]*)"\])?$/i.exec(sel);
+    if (!m || (!m[1] && !m[2] && !m[3]))
+      throw new Error("偽 DOM が対応していない selector: " + sel);
+    const [, tag, cls, attr, val] = m;
+    return this.all(
+      (n) =>
+        n !== this &&
+        (!tag || n.tagName === tag.toUpperCase()) &&
+        (!cls || n.className.split(/\s+/).includes(cls)) &&
+        (!attr || n.getAttribute(attr) === val),
+    );
+  }
+  querySelector(sel) {
+    return this.querySelectorAll(sel)[0] || null;
   }
 }
 

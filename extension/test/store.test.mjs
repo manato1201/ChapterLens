@@ -142,3 +142,81 @@ test("store: 題名と前回の自動の結果(境界+題名)を保存する。�
   assert.equal(await store.saveTitles("v1", [{ start: -1, title: "x" }]), false);
   assert.equal(await store.saveAuto("v1", "bad", []), false);
 });
+
+// ---- 題名・大見出し(ローカル LLM)の保存 ----
+test("store: 生成した題名と大見出しを保存し、他の保存物(章の調整・直した題名)を壊さない", async () => {
+  const store = Store.create(memoryArea());
+  assert.equal(await store.saveTitles("v1", [{ start: 10, title: "直した題名" }]), true);
+  assert.equal(
+    await store.saveGenerated("v1", [{ start: 0, title: "  釣りを始める  " }, { start: 60, title: "魚を売る(6220ベル)" }], [{ heading: "釣り", from: 0, to: 1 }]),
+    true,
+  );
+  const got = await store.load("v1");
+  assert.deepEqual(got.generated, {
+    titles: [{ start: 0, title: "釣りを始める" }, { start: 60, title: "魚を売る(6220ベル)" }],
+    sections: [{ heading: "釣り", from: 0, to: 1 }],
+  });
+  assert.deepEqual(got.titles, [{ start: 10, title: "直した題名" }]);
+});
+
+test("store: 生成の保存の上限と、壊れた値(題名 500・見出し 100・文字列 60 文字)", async () => {
+  const store = Store.create(memoryArea());
+  const many = Array.from({ length: 501 }, (_, i) => ({ start: i, title: "題名" }));
+  assert.equal(await store.saveGenerated("v1", many, []), false);
+  const secs = Array.from({ length: 101 }, (_, i) => ({ heading: "見出し", from: i, to: i }));
+  assert.equal(await store.saveGenerated("v1", [], secs), false);
+  assert.equal(await store.saveGenerated("v1", [{ start: -1, title: "x" }], []), false);
+  assert.equal(await store.saveGenerated("v1", [], [{ heading: "見出し", from: 3, to: 1 }]), false);
+  assert.equal(await store.saveGenerated("v1", [], [{ heading: "見出し", from: "0", to: 1 }]), false);
+  assert.equal(await store.saveGenerated("v1", [], "bad"), false);
+  assert.equal(await store.saveGenerated("bad id!", [], []), false);
+  assert.equal(await store.saveGenerated("v1", [{ start: 0, title: "あ".repeat(80) }], [{ heading: "い".repeat(80), from: 0, to: 0 }]), true);
+  const g = (await store.load("v1")).generated;
+  assert.equal(Array.from(g.titles[0].title).length, 60);
+  assert.equal(Array.from(g.sections[0].heading).length, 60);
+});
+
+test("store: 保存された generated が壊れていたら、読み飛ばす", async () => {
+  const area = memoryArea();
+  await area.set({ "chapterlens.v.v1": { generated: { titles: "bad", sections: [] } } });
+  assert.equal((await Store.create(area).load("v1")).generated, undefined);
+});
+
+// ---- エンジンのクライアント(題名・大見出し) ----
+test("engine: title / sections は /v1/title・/v1/sections へ POST する。入力の型を検査する", async () => {
+  const sent = [];
+  const c = createClient(async (m) => { sent.push(m); return { ok: true, data: { title: "x" } }; });
+  await c.title("字幕の本文です", "前の題名");
+  await c.title("字幕の本文です");
+  await c.sections(["a", "b", "c", "d"]);
+  assert.deepEqual(sent[0], { target: "background", type: "engine", method: "POST", path: "/v1/title", body: { text: "字幕の本文です", prev_title: "前の題名" } });
+  assert.deepEqual(sent[1].body, { text: "字幕の本文です" });
+  assert.deepEqual(sent[2], { target: "background", type: "engine", method: "POST", path: "/v1/sections", body: { titles: ["a", "b", "c", "d"] } });
+  assert.throws(() => c.title("", ""), TypeError);
+  assert.throws(() => c.title(123), TypeError);
+  assert.throws(() => c.sections("x"), TypeError);
+  assert.throws(() => c.sections([1, 2]), TypeError);
+});
+
+test("describeError: 無効(403)・窓口が落ちている(502)は、エンジンの文をそのまま見せる", () => {
+  assert.match(describeError({ ok: false, status: 403, error: "題名付け(ローカル LLM)は無効です。管理者が有効にしてください" }), /無効/);
+  assert.match(describeError({ ok: false, status: 502, error: "ローカル LLM(窓口)に接続できません。LocalLLMHarness を起動してください(uv run llh serve)" }), /llh serve/);
+  assert.match(describeError({ ok: false, status: 502, error: "" }), /エンジン/);
+});
+
+// ---- 最終レビューの指摘(I3・I5) ----
+test("describeError: 時間切れ(timeout)は、日本語で次にすることを案内する", () => {
+  const msg = describeError({ ok: false, code: "timeout", error: "signal is aborted without reason" });
+  assert.match(msg, /時間内/);
+  assert.doesNotMatch(msg, /aborted/);
+});
+
+test("store: 大見出しは、作ったときの章の開始時刻(starts)といっしょに保存・読み出す", async () => {
+  const store = Store.create(memoryArea());
+  assert.equal(await store.saveGenerated("v1", [{ start: 0, title: "釣りを始める" }], [{ heading: "釣り", from: 0, to: 1 }], [0, 60]), true);
+  assert.deepEqual((await store.load("v1")).generated.starts, [0, 60]);
+  assert.equal(await store.saveGenerated("v1", [], [], [0, -5]), false); // 壊れた時刻
+  assert.equal(await store.saveGenerated("v1", [], [], "bad"), false);
+  assert.equal(await store.saveGenerated("v1", [{ start: 0, title: "釣りを始める" }], []), true); // starts は省略できる(見出しが無いとき)
+  assert.equal((await store.load("v1")).generated.starts, undefined);
+});

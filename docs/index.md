@@ -10,7 +10,8 @@
 | **基礎から学びたい**(Python・TF-IDF・検出・拡張・音声・安全・テスト) | [講義資料](lecture/index.md)(全 15 回。実行できる例・確認問題・解答つき) |
 | **保守・拡張したい** | [学習資料](learn/index.md)(コードの読み方・レシピ・テスト・トラブルシュート・メンテナンス) |
 | **分からない言葉がある** | [用語集](learn/glossary.md) |
-| **実測の詳細を見たい** | [エンジンの機能と実測](reference/engine-features.md)・[評価](reference/evaluation.md) |
+| **実測の詳細を見たい** | [エンジンの機能と実測](reference/engine-features.md)・[評価](reference/evaluation.md)・[題名付け(ローカル LLM)の実測](reference/titles-measurement.md) |
+| **題名・大見出し・テロップの設計を知りたい** | [設計](superpowers/specs/2026-11-23-telop-and-titles-design.md)・[実装計画](superpowers/plans/2026-11-23-telop-and-titles.md) |
 
 ## 図
 

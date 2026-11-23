@@ -397,11 +397,48 @@
     return chapters;
   }
 
-  /** YouTube の概要欄に貼れる形(先頭 0:00・3 つ以上・各 10 秒以上)。満たせないときは null。 */
-  function descriptionText(chapters) {
+  // ---------- 大見出し(章を束ねる見出し。ローカル LLM が作る。形が合わなければ、使わない) ----------
+  /** sections = [{heading, from, to}](0 始まり・両端を含む)が、n 章を過不足なく連続で覆い、2 区間以上のときだけ、整えた一覧。それ以外は []。 */
+  function validSections(sections, n) {
+    if (!Array.isArray(sections) || sections.length < 2) return [];
+    const out = [];
+    let expect = 0;
+    for (const s of sections) {
+      if (!s || typeof s.heading !== "string" || !Number.isInteger(s.from) || !Number.isInteger(s.to)) return [];
+      const heading = s.heading.trim();
+      if (!heading || Array.from(heading).length > 16 || /[\r\n]/.test(heading)) return [];
+      if (s.from !== expect || s.to < s.from || s.to >= n) return [];
+      out.push({ heading, from: s.from, to: s.to });
+      expect = s.to + 1;
+    }
+    return expect === n ? out : [];
+  }
+
+  /** 章に、見出しの番号(`section`)を付ける。戻りは { chapters, sections }(章の数と合わないときは、見出しを捨てて全章 null)。 */
+  function applySections(chapters, sections) {
+    const valid = validSections(sections, chapters.length);
+    const out = chapters.map((c) => Object.assign({}, c, { section: null }));
+    valid.forEach((s, k) => { for (let i = s.from; i <= s.to; i++) out[i].section = k; });
+    return { chapters: out, sections: valid };
+  }
+
+  /** LLM が作った題名([{start, title}])を、開始時刻が 1 秒以内の章へ当てる(title_by: "llm")。空の題名は無視。 */
+  function applyGenerated(chapters, generated) {
+    if (!generated || generated.length === 0) return chapters;
+    return chapters.map((c) => {
+      const g = generated.find((x) => Math.abs(x.start - c.start) <= 1);
+      return g && g.title ? Object.assign({}, c, { title: g.title, title_by: "llm" }) : c;
+    });
+  }
+
+  /** YouTube の概要欄に貼れる形(先頭 0:00・3 つ以上・各 10 秒以上)。満たせないときは null。sections があれば、【見出し】の行を入れる。 */
+  function descriptionText(chapters, sections) {
     if (chapters.length < 3) return null;
     if (chapters.some((c) => c.end - c.start < 10)) return null;
-    return chapters.map((c) => `${formatTimestamp(c.start)} ${c.title || "チャプター"}`).join("\n");
+    const line = (c) => `${formatTimestamp(c.start)} ${c.title || "チャプター"}`;
+    const valid = validSections(sections, chapters.length);
+    if (valid.length === 0) return chapters.map(line).join("\n");
+    return valid.map((s) => `【${s.heading}】\n` + chapters.slice(s.from, s.to + 1).map(line).join("\n")).join("\n\n");
   }
 
   // ---------- 書き出し・検索・題名の上書き(画面の外でも使える純粋な関数) ----------
@@ -423,14 +460,18 @@
   function markdownText(chapters, opts) {
     const o = opts || {};
     const lines = [];
+    const secs = validSections(o.sections, chapters.length);
+    const startsAt = new Map(secs.map((x) => [x.from, x.heading]));
+    const level = secs.length ? "###" : "##";
     if (o.heading) lines.push(`# ${o.heading}`, "");
-    for (const c of chapters) {
+    chapters.forEach((c, i) => {
+      if (startsAt.has(i)) lines.push(`## 【${startsAt.get(i)}】`, "");
       const t = formatTimestamp(c.start);
       const link = o.videoUrl ? `[${t}](${o.videoUrl}${o.videoUrl.includes("?") ? "&" : "?"}t=${Math.floor(c.start)}s)` : t;
-      lines.push(`## ${link} ${c.title || "チャプター"}`);
+      lines.push(`${level} ${link} ${c.title || "チャプター"}`);
       if (c.snippet) lines.push("", `> ${c.snippet}`);
       lines.push("");
-    }
+    });
     return lines.join("\n").trimEnd() + "\n";
   }
   /** 字幕の中から、語を含む行を探す(大文字小文字・全角半角の差は無視)。最大 limit 件。 */
@@ -453,6 +494,15 @@
       const o = overrides.find((x) => Math.abs(x.start - c.start) <= 1);
       return o && o.title ? Object.assign({}, c, { title: o.title, custom: true }) : c;
     });
+  }
+
+  /** 章の区間 [start, end) の字幕を、空白 1 つでつないだ文。maxChars を超えるときは、先頭・中ほど・末尾から均等に取る(ローカル LLM へ送る分)。 */
+  function chapterText(cues, start, end, maxChars) {
+    const limit = maxChars || 12000;
+    const t = (cues || []).filter((c) => c.start >= start - 1e-6 && c.start < end - 1e-6).map((c) => String(c.text).trim()).filter(Boolean).join(" ").replace(/\s+/g, " ");
+    if (t.length <= limit) return t;
+    const k = Math.floor((limit - 2) / 3), mid = Math.floor(t.length / 2);
+    return [t.slice(0, k), t.slice(mid - Math.floor(k / 2), mid - Math.floor(k / 2) + k), t.slice(t.length - k)].join(" ");
   }
 
   /** いま再生中の章の番号(二分探索)。 */
@@ -657,7 +707,7 @@
   return {
     tokens, termCounts, cosine, similarityCurve, selectBoundaries, refineBoundaries, snap,
     detect, detectPartial, V2_PARAMS, GRANULARITY, targetCountFor,
-    formatTimestamp, excerpt, labelSections, buildChapters, srtText, vttText, markdownText, searchCues, applyTitleOverrides, descriptionText, chapterIndexAt, cuesFromRows,
+    formatTimestamp, excerpt, labelSections, buildChapters, srtText, vttText, markdownText, searchCues, applyTitleOverrides, applyGenerated, applySections, validSections, chapterText, descriptionText, chapterIndexAt, cuesFromRows,
     PreparedCues, DIGEST, selectDigest, digestAgreement, digestNext,
     EDIT_MIN_GAP_S, normalizeBoundaries, removeBoundary, moveBoundary, addBoundary,
   };

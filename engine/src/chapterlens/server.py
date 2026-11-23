@@ -45,14 +45,20 @@ from .captions import Cue
 from .corrections import CorrectionError, CorrectionStore
 from .detectors import available, get_detector
 from .live_sessions import MAX_PUSH_CUES, LiveSessionError, LiveSessions
+from .llm import LlmConfig, LlmError, chat as llm_chat_default, llm_config_from_env
 from .schema import segments_from_boundaries, to_document
 from .sharing import ShareError, ShareStore, validate_share
+from .titles import generate_sections, generate_title
 
 MAX_JSON_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_AUDIO_MB = 300
 MAX_CUES = 50000
 MAX_CUE_CHARS = 2000
-DEFAULT_RATE_LIMITS = {"default": (240, 60.0), "transcribe": (30, 60.0), "admin": (60, 60.0)}  # (回数, 秒)
+DEFAULT_RATE_LIMITS = {"default": (240, 60.0), "transcribe": (30, 60.0), "admin": (60, 60.0), "llm": (600, 600.0)}  # (回数, 秒)
+MAX_TITLE_TEXT_CHARS = 12000
+MAX_PREV_TITLE_CHARS = 60
+MAX_SECTION_TITLES = 200
+MAX_SECTION_TITLE_CHARS = 60
 
 
 def default_home() -> Path:
@@ -91,6 +97,10 @@ class Config:
         self.shares = ShareStore(self.home / "shares.db")
         self.live = LiveSessions()
         self.limiter = RateLimiter(rate_limits if rate_limits is not None else DEFAULT_RATE_LIMITS)
+        self.llm_config: LlmConfig | None = None  # None のときは、呼ぶたびに環境変数から読む(テストでは差し替える)
+        self.llm_chat = llm_chat_default
+        self.llm_lock = threading.Lock()  # 窓口は 1 度に 1 リクエスト(8GB の VRAM)。こちらも 1 度に 1 つだけ
+        self.llm_lock_wait_s = 60.0  # 前の呼び出しが長引いているとき、順番を待つ上限(超えたら 503)
 
     def close(self) -> None:
         self.store.close()
@@ -144,6 +154,8 @@ def _group(route: str) -> str:
         return "transcribe"
     if route.startswith("/v1/admin"):
         return "admin"
+    if route in ("/v1/title", "/v1/sections"):
+        return "llm"
     return "default"
 
 
@@ -211,8 +223,23 @@ def make_handler(cfg: Config):
             if n < 0:
                 raise HttpError(400, "Content-Length が不正です")
             if n > limit:
+                self._drain(n)
                 raise HttpError(413, f"本文が大きすぎます(上限 {limit // (1024 * 1024)}MB)")
             return self.rfile.read(n)
+
+        def _drain(self, n: int, cap: int = 4 * 1024 * 1024) -> None:
+            """断る本文を、少しだけ読み捨ててから返事をする。読まずに閉じると、Windows では相手に接続の中断(RST)として見え、
+            413 の返事が届かないことがある。大きすぎる本文は cap までで諦める(攻撃者の送る量に付き合わない)。"""
+            try:
+                self.connection.settimeout(2.0)
+                remaining = min(n, cap)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:
+                pass
 
         def _json(self) -> dict:
             try:
@@ -286,6 +313,10 @@ def make_handler(cfg: Config):
             if route == "/v1/corrections/undo" and method == "POST":
                 body = self._json()
                 return 200, {"undone": cfg.store.undo_last(self.user["id"], str(body.get("video", "")))}
+            if route == "/v1/title" and method == "POST":
+                return 200, self._title(self._json())
+            if route == "/v1/sections" and method == "POST":
+                return 200, self._sections(self._json())
             if route == "/v1/me" and method == "GET":
                 return 200, {"user": self.user, "share_mode": cfg.accounts.share_mode}
             if route == "/v1/me/forget" and method == "POST":
@@ -306,6 +337,69 @@ def make_handler(cfg: Config):
             if route.startswith("/v1/admin/"):
                 return self._admin(method, route, query)
             raise HttpError(404, "そのエンドポイントはありません")
+
+        # ---- 題名・大見出し(ローカル LLM) ----
+        def _llm_config(self) -> LlmConfig:
+            if not cfg.accounts.llm_enabled:
+                raise HttpError(403, "題名付け(ローカル LLM)は無効です。管理者が有効にしてください")
+            try:
+                return cfg.llm_config or llm_config_from_env()
+            except ValueError as e:  # 設定の誤り(token などの値は含まない)
+                raise HttpError(503, f"ローカル LLM の設定が不正です: {e}")
+
+        def _llm_error(self, e: LlmError) -> HttpError:
+            if e.code == "bad_response" and e.status in (401, 403):
+                return HttpError(502, "ローカル LLM(窓口)に断られました。窓口の token を確認してください(環境変数 LLH_TOKEN。名前は CHAPTERLENS_LLM_TOKEN_ENV で変えられます)")
+            if e.code == "bad_response" and e.status == 503:
+                return HttpError(502, "ローカル LLM(窓口)が混んでいるか、モデルを読み込み中です。少し待ってから、もう一度お試しください")
+            if e.code == "bad_response" and e.status in (400, 404):
+                return HttpError(502, "ローカル LLM(窓口)がモデルまたは入力を受け付けませんでした。モデル名(環境変数 CHAPTERLENS_LLM_MODEL)と、窓口のモデルの読み込みを確認してください")
+            if e.code == "timeout":
+                return HttpError(502, "ローカル LLM(窓口)の応答が時間内に返りませんでした。モデルの読み込み中かもしれません。もう一度お試しください")
+            if e.code == "unreachable":
+                return HttpError(502, "ローカル LLM(窓口)に接続できません。LocalLLMHarness を起動してください(uv run llh serve)")
+            return HttpError(502, "ローカル LLM(窓口)が想定外の応答を返しました")
+
+        def _with_llm_lock(self, fn):
+            """窓口は 1 件ずつ。前の呼び出しが長引いていても、無限には待たない(超えたら 503)。"""
+            if not cfg.llm_lock.acquire(timeout=cfg.llm_lock_wait_s):
+                raise HttpError(503, "ローカル LLM が、ほかの題名付けで混んでいます。少し待ってから、もう一度お試しください")
+            try:
+                return fn()
+            finally:
+                cfg.llm_lock.release()
+
+        def _title(self, body: dict) -> dict:
+            llm = self._llm_config()
+            text, prev = body.get("text"), body.get("prev_title", "")
+            if not isinstance(text, str) or not text.strip():
+                raise HttpError(400, "text は空でない文字列です")
+            if len(text) > MAX_TITLE_TEXT_CHARS:
+                raise HttpError(400, f"text が長すぎます(最大 {MAX_TITLE_TEXT_CHARS} 文字)")
+            if not isinstance(prev, str) or len(prev) > MAX_PREV_TITLE_CHARS:
+                raise HttpError(400, f"prev_title は {MAX_PREV_TITLE_CHARS} 文字以内の文字列です")
+            started = time.time()
+            try:
+                title, rejected = self._with_llm_lock(lambda: generate_title(llm, text, prev, chat_fn=cfg.llm_chat))
+            except LlmError as e:
+                raise self._llm_error(e)
+            self._event("llm.title", model=llm.model, chapters=1, rejected=rejected, ms=round((time.time() - started) * 1000))
+            return {"title": title, "title_by": "llm" if title else "rule", "rejected": rejected}
+
+        def _sections(self, body: dict) -> dict:
+            llm = self._llm_config()
+            titles = body.get("titles")
+            if not isinstance(titles, list) or len(titles) > MAX_SECTION_TITLES:
+                raise HttpError(400, f"titles は {MAX_SECTION_TITLES} 件以内の配列です")
+            if any(not isinstance(t, str) or len(t) > MAX_SECTION_TITLE_CHARS for t in titles):
+                raise HttpError(400, f"titles の各要素は {MAX_SECTION_TITLE_CHARS} 文字以内の文字列です")
+            started = time.time()
+            try:
+                sections, rejected = self._with_llm_lock(lambda: generate_sections(llm, titles, chat_fn=cfg.llm_chat))
+            except LlmError as e:
+                raise self._llm_error(e)
+            self._event("llm.sections", model=llm.model, chapters=len(titles), rejected=rejected, ms=round((time.time() - started) * 1000))
+            return {"sections": sections, "rejected": rejected}
 
         # ---- 共有(CH3) ----
         def _share_publish(self, body: dict) -> dict:
@@ -366,13 +460,23 @@ def make_handler(cfg: Config):
                     self._event(f"admin.user.{action}", target=uid, role=u["role"])
                     return 200, {"user": u}
                 if sub == ["settings"] and method == "GET":
-                    return 200, {"share_mode": cfg.accounts.share_mode, "share_modes": list(SHARE_MODES), "roles": list(ROLES)}
+                    return 200, {"share_mode": cfg.accounts.share_mode, "share_modes": list(SHARE_MODES), "roles": list(ROLES),
+                                 "llm_enabled": cfg.accounts.llm_enabled}
                 if sub == ["settings"] and method == "POST":
-                    mode = self._json().get("share_mode")
-                    before = cfg.accounts.share_mode
-                    cfg.accounts.set_share_mode(str(mode))
-                    self._event("admin.settings.share_mode", before=before, after=str(mode))
-                    return 200, {"share_mode": cfg.accounts.share_mode}
+                    body = self._json()
+                    if "llm_enabled" in body:
+                        flag = body["llm_enabled"]
+                        if not isinstance(flag, bool):
+                            raise HttpError(400, "llm_enabled は true か false です")
+                        before_llm = cfg.accounts.llm_enabled
+                        cfg.accounts.set_llm_enabled(flag)
+                        self._event("admin.settings.llm_enabled", before=before_llm, after=flag)
+                    if "share_mode" in body or "llm_enabled" not in body:
+                        mode = body.get("share_mode")
+                        before = cfg.accounts.share_mode
+                        cfg.accounts.set_share_mode(str(mode))
+                        self._event("admin.settings.share_mode", before=before, after=str(mode))
+                    return 200, {"share_mode": cfg.accounts.share_mode, "llm_enabled": cfg.accounts.llm_enabled}
                 if sub == ["audit"] and method == "GET":
                     try:
                         n = int((query.get("n") or ["100"])[0])

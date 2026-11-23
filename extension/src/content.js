@@ -20,8 +20,10 @@
   const Capture = window.ChapterLensCapture;
   const Store = window.ChapterLensStore;
   const Engine = window.ChapterLensEngine;
+  const Telop = window.ChapterLensTelop;
 
   const PREF_KEY = "chapterlens.granularity";
+  const TELOP_KEY = "chapterlens.telop"; // テロップの出し方: change(章の切り替え)/ always / off
   const DIGEST_MIN_S = 60; // ダイジェストを作れる最小の長さ
   const DIGEST_RATIO = 0.2; // ダイジェストの長さの既定の割合
   const NEW_SPAN_S = 15; // 「いまの位置から足す」区間の長さ
@@ -32,6 +34,9 @@
     share: { info: null, list: [], overlay: new Set(), mineOff: false },
     live: null,
     titles: [], // 利用者が付けた題名 [{start, title}]
+    generated: [], sections: [], sectionStarts: null, viewSections: [], // ローカル LLM の題名 [{start, title}]・大見出し [{heading, from, to}]・章の数と合うときの大見出し
+    llm: { running: false, stop: false },
+    telopMode: "change", telop: null,
     query: "",
   };
 
@@ -45,7 +50,7 @@
   const isLiveVideo = () => { const v = videoEl(); return !!(v && !Number.isFinite(v.duration)) || !!document.querySelector(".ytp-live"); };
   const fmt = (sec) => Core.formatTimestamp(Math.max(0, Math.floor(sec)));
   const effective = () => state.manual || state.auto;
-  const canEdit = () => !state.capture && !state.live && !!state.cues && state.cues.length > 0 && state.duration > 0;
+  const canEdit = () => !state.capture && !state.live && !state.llm.running && !!state.cues && state.cues.length > 0 && state.duration > 0; // 題名付けの間は、章立てを動かさない
   const say = (text, kind) => state.ui.setStatus(text, kind);
   // Math.max(...配列) は、長い配列(数万)で引数の上限に当たるので、reduce で
   const maxEnd = (cues) => cues.reduce((m, c) => (c.end > m ? c.end : m), 0);
@@ -54,8 +59,9 @@
   // ---- 設定(粒度)。storage が使えない環境でも動く ----
   async function loadPref() {
     try {
-      const got = await chrome.storage.local.get(PREF_KEY);
+      const got = await chrome.storage.local.get([PREF_KEY, TELOP_KEY]);
       if (got && Core.GRANULARITY[got[PREF_KEY]]) state.granularity = got[PREF_KEY];
+      if (got && Telop.MODES.includes(got[TELOP_KEY])) state.telopMode = got[TELOP_KEY];
     } catch (_) { /* 既定のまま */ }
   }
   function savePref() {
@@ -90,9 +96,9 @@
   function render() {
     const ui = state.ui;
     ui.setGranularity(state.granularity);
-    ui.setChapters(state.chapters, Core.formatTimestamp, { editable: canEdit(), tentative: state.tentative });
+    ui.setChapters(state.chapters, Core.formatTimestamp, Object.assign({ editable: canEdit(), tentative: state.tentative }, state.viewSections.length ? { sections: state.viewSections } : {}));
     ui.setManual(!!state.manual);
-    ui.setCanCopy(Core.descriptionText(state.chapters) !== null);
+    ui.setCanCopy(Core.descriptionText(state.chapters, state.viewSections) !== null);
     updateCurrent();
     drawMarkers();
     renderDigest();
@@ -109,7 +115,7 @@
   }
 
   function rebuild() {
-    state.chapters = Core.applyTitleOverrides(Core.buildChapters(effective(), state.cues, analysisDuration()), state.titles);
+    state.chapters = decorate(Core.buildChapters(effective(), state.cues, analysisDuration()));
     state.tentative = [];
     recomputeDigest();
     render();
@@ -139,6 +145,7 @@
 
   async function run() {
     if (state.busy) return;
+    if (state.llm.running) { say("題名を付けている間は、目次を作り直せません(「止める」で止められます)。", "error"); return; }
     if (state.capture) { say("いま音声から作っています。止めるには、「取り込みを止める」を押してください。"); return; }
     const ui = state.ui;
     state.busy = true;
@@ -163,6 +170,7 @@
 
   function setGranularity(key) {
     if (!Core.GRANULARITY[key]) return;
+    if (state.llm.running) { say("題名を付けている間は、粒度を変えられません(「止める」で止められます)。", "error"); return; }
     if (state.manual) { say("直した章があります。粒度を変えるには、先に「自動に戻す」を押してください。"); return; }
     state.granularity = key;
     savePref();
@@ -176,7 +184,7 @@
   }
 
   async function copy() {
-    const text = Core.descriptionText(state.chapters);
+    const text = Core.descriptionText(state.chapters, state.viewSections);
     if (!text) { say("概要欄に使える形(3 章以上・各 10 秒以上)になっていません。", "error"); return; }
     try {
       // ページにフォーカスが無いと、writeText は解決も拒否もしないまま止まることがある。待ちすぎずに次の方法へ
@@ -199,6 +207,31 @@
     const video = videoEl();
     if (!video || state.chapters.length === 0) return;
     state.ui.setCurrent(Core.chapterIndexAt(state.chapters, video.currentTime));
+    const t = ensureTelop();
+    if (t) t.onTime();
+  }
+
+  // ---- テロップ(動画の上に、今の章の題名・大見出しを文字で重ねる。自分の画面だけ) ----
+  function ensureTelop() {
+    if (state.telop) return state.telop;
+    const player = document.querySelector("#movie_player");
+    if (!player || !Telop) return null; // プレイヤーが無ければ出さない(目次は使える)
+    const view = Telop.create(document, player);
+    state.telop = Telop.createTracker({
+      view,
+      getIdx: () => { const v = videoEl(); return v ? Core.chapterIndexAt(state.chapters, v.currentTime) : 0; },
+      getChapters: () => state.chapters, getSections: () => state.viewSections, getMode: () => state.telopMode,
+      isAdShowing: () => !!(player.classList && player.classList.contains("ad-showing")),
+      isReducedMotion: () => !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
+    });
+    return state.telop;
+  }
+  function onTelopMode(mode) {
+    if (!Telop.MODES.includes(mode)) return;
+    state.telopMode = mode;
+    try { chrome.storage.local.set({ [TELOP_KEY]: mode }); } catch (_) { /* 保存できなくても動く */ }
+    state.ui.setTelopMode(mode);
+    if (state.telop) { state.telop.reset(); state.telop.onTime(); }
   }
   function bindVideo() {
     const video = videoEl();
@@ -207,6 +240,71 @@
     video.addEventListener("timeupdate", updateCurrent);
   }
 
+  // ================= 題名・大見出し(ローカル LLM。エンジンが窓口 LocalLLMHarness を呼ぶ) =================
+  /** 題名の材料を重ねる順番: 利用者の直し > LLM の題名 > 規則の題名。見出しは、章の数と合うときだけ(合わなければ捨てる)。 */
+  function decorate(chapters) {
+    const titled = Core.applyTitleOverrides(Core.applyGenerated(chapters, state.generated), state.titles);
+    // 大見出しは、作ったときと同じ章立て(開始時刻)のときだけ使う(境界を動かす・粒度を変えると、章の数が同じでもずれるため)
+    const same = !!state.sectionStarts && state.sectionStarts.length === chapters.length && chapters.every((c, i) => Math.abs(c.start - state.sectionStarts[i]) <= 1);
+    const sec = Core.applySections(titled, same ? state.sections : []);
+    state.viewSections = sec.sections;
+    return sec.chapters;
+  }
+
+  function upsertGenerated(start, title) {
+    state.generated = state.generated.filter((g) => Math.abs(g.start - start) > 1).concat([{ start, title }]);
+  }
+
+  async function generateTitles() {
+    if (state.llm.running) return;
+    if (!canEdit() || state.chapters.length === 0) { say(state.capture || state.live ? "音声の取り込み中・ライブ中は、題名を付けられません。" : "先に「目次を作る」を押してください。", "error"); return; }
+    const id = state.videoId;
+    const ui = state.ui;
+    const run = (state.llm = { running: true, stop: false });
+    const stale = () => state.llm !== run || state.videoId !== id; // 別の動画へ移った・作り直された: 以降の結果は捨てる
+    const spans = state.chapters.map((c) => ({ start: c.start, end: c.end, custom: !!c.custom }));
+    const total = spans.length;
+    const progress = (done) => ui.setTitleProgress({ running: true, done, total });
+    let failed = false, made = 0, prev = "";
+    progress(0);
+    render(); // 題名を付けている間は、章を直せない表示にする
+    say("ローカル LLM で題名を付けています(章ごとに数秒かかります。止めるときは「止める」)。");
+    try {
+      for (let i = 0; i < total; i++) {
+        if (run.stop) break;
+        const sp = spans[i];
+        const text = Core.chapterText(state.cues, sp.start, sp.end);
+        if (!sp.custom && text.length >= 20) { // 直した題名・字幕の無い章は、呼ばない
+          const res = await engine.title(text, prev);
+          if (stale()) return;
+          if (!res.ok) { failed = true; say(Engine.describeError(res), "error"); break; }
+          const title = res.data && typeof res.data.title === "string" ? res.data.title : "";
+          if (title) { upsertGenerated(sp.start, title); made++; rebuild(); }
+        }
+        prev = (state.chapters[i] && state.chapters[i].title) || prev;
+        progress(i + 1);
+      }
+      let sectionNote = "";
+      if (!failed && !run.stop && total >= 4 && total <= 200) {
+        const res = await engine.sections(state.chapters.map((c) => (c.title || "チャプター").slice(0, 60)));
+        if (stale()) return;
+        if (!res.ok) { failed = true; say(Engine.describeError(res), "error"); }
+        else {
+          state.sections = Array.isArray(res.data && res.data.sections) ? res.data.sections : [];
+          state.sectionStarts = state.chapters.map((c) => c.start);
+          rebuild();
+          sectionNote = state.viewSections.length ? `・大見出し ${state.viewSections.length} 件` : "(大見出しは作れませんでした)";
+        }
+      }
+      if (stale()) return;
+      if (made > 0 || sectionNote) await store.saveGenerated(id, state.generated, state.sections, state.sections.length ? state.sectionStarts : undefined); // 何も作れなかったときは、保存しない
+      if (!failed) say(run.stop ? `途中で止めました(題名 ${made} 件)。ここまでを保存しました。` : `題名を ${made} 章に付けました${sectionNote}。`);
+    } finally {
+      if (state.llm === run) { run.running = false; ui.setTitleProgress({ running: false }); render(); } // 章を、また直せるようにする
+    }
+  }
+  const stopTitles = () => { state.llm.stop = true; };
+
   // ================= 章の調整(CH3b) =================
   async function restoreSaved() {
     const id = state.videoId;
@@ -214,11 +312,14 @@
     if (state.videoId !== id) return; // 読み込み中に別の動画へ移った
     state.manual = saved.manual ? saved.manual.boundaries : null;
     state.titles = saved.titles || [];
+    state.generated = saved.generated ? saved.generated.titles : [];
+    state.sections = saved.generated ? saved.generated.sections : [];
+    state.sectionStarts = saved.generated && saved.generated.starts ? saved.generated.starts : null;
     if (saved.digest) { state.digest.custom = saved.digest.spans; state.digest.ratio = saved.digest.ratio || state.digest.ratio; }
   }
 
   function applyEdit(next, okMessage) {
-    if (!canEdit()) { say(state.capture || state.live ? "音声の取り込み中・ライブ中は、章を直せません。" : "先に「目次を作る」を押してください。", "error"); return; }
+    if (!canEdit()) { say(state.llm.running ? "題名を付けている間は、章を直せません(「止める」で止められます)。" : state.capture || state.live ? "音声の取り込み中・ライブ中は、章を直せません。" : "先に「目次を作る」を押してください。", "error"); return; }
     if (!next) { say("その直し方はできません(他の境界・動画の先頭と末尾から 5 秒以上あけてください)。", "error"); return; }
     const clean = Core.normalizeBoundaries(next, state.duration);
     state.manual = clean;
@@ -233,6 +334,7 @@
     applyEdit(video ? Core.addBoundary(effective(), video.currentTime, state.duration) : null, `${video ? fmt(video.currentTime) : ""} に章を足しました。`);
   }
   function manualReset() {
+    if (state.llm.running) { say("題名を付けている間は、章を直せません(「止める」で止められます)。", "error"); return; }
     state.manual = null;
     store.clearManual(state.videoId);
     if (state.cues) analyze();
@@ -724,7 +826,7 @@
       if (state.chapters.length === 0) { say("先に目次を作ってください。", "error"); return; }
       const url = state.videoId ? `https://www.youtube.com/watch?v=${state.videoId}` : "";
       const heading = (document.title || "").replace(/ - YouTube$/, "");
-      const text = Core.markdownText(state.chapters, { videoUrl: url, heading });
+      const text = Core.markdownText(state.chapters, { videoUrl: url, heading, sections: state.viewSections });
       download(`chapters-${id}.md`, text, "text/markdown");
       copyText(text, "Markdown をダウンロードし、クリップボードにもコピーしました。");
       return;
@@ -767,6 +869,9 @@
     const saved = await store.load(id);
     if (state.videoId !== id || state.cues) return; // 別の動画へ移った・もう字幕を読んだ
     state.titles = saved.titles || [];
+    state.generated = saved.generated ? saved.generated.titles : [];
+    state.sections = saved.generated ? saved.generated.sections : [];
+    state.sectionStarts = saved.generated && saved.generated.starts ? saved.generated.starts : null;
     const bounds = saved.manual ? saved.manual.boundaries : saved.auto ? saved.auto.boundaries : null;
     if (!bounds || bounds.length === 0) return;
     const video = videoEl();
@@ -778,7 +883,7 @@
       start, end: i + 1 < arr.length ? arr[i + 1] : dur, snippet: "",
       title: (names.find((t) => Math.abs(t.start - start) <= 1) || {}).title || "",
     }));
-    state.chapters = Core.applyTitleOverrides(chapters, state.titles);
+    state.chapters = decorate(chapters);
     render();
     say(`前回の目次を表示しています(${state.chapters.length} 章)。「目次を作る」で、字幕を読み込み直せます。`);
   }
@@ -793,11 +898,15 @@
     state.digest.auto = []; state.digest.custom = null; state.digest.ratio = DIGEST_RATIO;
     state.share = { info: null, list: [], overlay: new Set(), mineOff: false };
     state.titles = []; state.query = "";
+    state.llm.stop = true; state.llm = { running: false, stop: false }; // 生成中なら、止めて、以降の結果を捨てる
+    if (state.telop) state.telop.reset(); // 前の動画のテロップを消す
+    state.generated = []; state.sections = []; state.sectionStarts = null; state.viewSections = [];
     clearMarkers();
     if (!state.ui) return;
     state.ui.setChapters([], Core.formatTimestamp, { editable: false });
     state.ui.setManual(false);
     state.ui.setCanCopy(false);
+    if (state.ui.setTitleProgress) state.ui.setTitleProgress({ running: false });
     state.ui.setRunLabel("目次を作る");
     renderDigest();
     state.ui.setSearch("");
@@ -807,7 +916,7 @@
   }
 
   function onNavigate() {
-    if (!isWatch()) { if (state.ui) state.ui.unmount(); clearMarkers(); return; }
+    if (!isWatch()) { if (state.ui) state.ui.unmount(); clearMarkers(); if (state.telop) { state.telop.destroy(); state.telop = null; } return; }
     if (state.ui) state.ui.mount();
     if (currentVideoId() !== state.videoId) reset();
     bindVideo();
@@ -822,10 +931,11 @@
       onDigestToggle: setDigestEnabled, onDigestRatio: digestRatio, onSpanToggle: spanToggle, onSpanAdd: spanAdd, onDigestReset: digestReset,
       onShareRefresh: guardShare(refreshShare), onSharePublish: guardShare(sharePublish), onShareRevoke: guardShare(shareRevoke),
       onShareOverlay: shareOverlay, onShareAdopt: shareAdopt,
-      onAudio, onOpenSetup, onTitleEdit, onTitleCancel: () => render(), onSearch, onExport,
+      onAudio, onOpenSetup, onTitleEdit, onTitleCancel: () => render(), onSearch, onExport, onTitles: generateTitles, onTitlesStop: stopTitles, onTelopMode,
       onTab: (name) => { if (name === "share") guardShare(refreshShare)(); else if (name === "digest") renderDigest(); },
     });
     state.ui.setGranularity(state.granularity);
+    state.ui.setTelopMode(state.telopMode);
     reset();
     document.addEventListener("yt-navigate-finish", onNavigate);
     document.addEventListener("keydown", onKey);

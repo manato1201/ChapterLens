@@ -173,6 +173,12 @@ def _cmd_admin(args: argparse.Namespace) -> int:
                 accounts.set_share_mode(args.mode)
                 audit.event("cli", "admin.settings.share_mode", before=before, after=args.mode)
             print(f"共有範囲: {accounts.share_mode}(off=共有しない / team=全員か指定した人 / named=指定した人だけ)")
+        elif cmd == "llm":
+            if args.state:
+                before = accounts.llm_enabled
+                accounts.set_llm_enabled(args.state == "on")
+                audit.event("cli", "admin.settings.llm_enabled", before=before, after=args.state == "on")
+            print("題名付け(ローカル LLM): " + ("有効" if accounts.llm_enabled else "無効") + "(on で有効 / off で無効。窓口は LocalLLMHarness)")
         elif cmd == "audit":
             for rec in audit.tail(args.n):
                 print(json.dumps(rec, ensure_ascii=False))
@@ -249,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
     pu.add_argument("--yes", action="store_true")
     sm = adsub.add_parser("share-mode", help="共有範囲を見る/変える(off / team / named)")
     sm.add_argument("mode", nargs="?", choices=["off", "team", "named"])
+    lm = adsub.add_parser("llm", help="題名付け(ローカル LLM)を見る/切り替える(on / off。既定は無効)")
+    lm.add_argument("state", nargs="?", choices=["on", "off"])
     ag = adsub.add_parser("audit", help="監査ログの末尾")
     ag.add_argument("-n", type=int, default=50)
     ad.set_defaults(func=_cmd_admin)

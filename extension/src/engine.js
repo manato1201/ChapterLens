@@ -19,6 +19,7 @@
     if (!res || res.ok) return "";
     if (res.code === "unconfigured") return "エンジンの接続設定(URL・token)がありません。ツールバーの ChapterLens のアイコンから設定してください。";
     if (res.code === "unreachable") return "エンジンに接続できません。エンジン(engine/ で uv run python -m chapterlens serve)を起動しているか確認してください。";
+    if (res.code === "timeout") return "エンジンの応答が時間内に返りませんでした。題名付けは、窓口がモデルを読み込んでいる間や、前の処理が長引いている間は、時間がかかります。少し待ってから、もう一度お試しください。";
     if (res.code === "origin") return "エンジンがこの拡張を許可していません。エンジンを --allow-origin chrome-extension://<この拡張の ID> で起動してください。";
     if (res.status === 401) return "token が違います(停止された利用者の token かもしれません)。";
     if (res.status === 429) return "リクエストが多すぎます。少し待ってからお試しください。";
@@ -59,6 +60,16 @@
         need(USER_ID.test(id || ""), "利用者 ID が不正です");
         need(["disable", "enable", "rotate", "purge", "role"].includes(action), "操作が不正です");
         return call("POST", `/v1/admin/users/${id}/${action}`, body || {});
+      },
+      // 題名・大見出し(ローカル LLM。エンジンが窓口を呼ぶ。無効のときは 403)
+      title(text, prevTitle) {
+        need(typeof text === "string" && text.trim() !== "", "text が不正です");
+        need(prevTitle === undefined || typeof prevTitle === "string", "prevTitle が不正です");
+        return call("POST", "/v1/title", prevTitle ? { text, prev_title: prevTitle } : { text });
+      },
+      sections(titles) {
+        need(Array.isArray(titles) && titles.every((t) => typeof t === "string"), "titles が不正です");
+        return call("POST", "/v1/sections", { titles });
       },
       settings: () => call("GET", "/v1/admin/settings"),
       setShareMode: (mode) => call("POST", "/v1/admin/settings", { share_mode: mode }),

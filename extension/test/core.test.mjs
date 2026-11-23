@@ -240,3 +240,79 @@ test("検索・題名の上書き", () => {
   const ch = core.applyTitleOverrides([{ start: 0, title: "a" }, { start: 100.4, title: "b" }], [{ start: 100, title: "直した" }]);
   assert.deepEqual(ch.map((c) => c.title), ["a", "直した"]);
 });
+
+// ---- 題名・大見出し(ローカル LLM)の反映 ----
+const CH4 = [
+  { start: 0, end: 60, title: "配信開始" },
+  { start: 60, end: 120, title: "島内放送" },
+  { start: 120, end: 180, title: "釣り開始" },
+  { start: 180, end: 240, title: "魚を売る" },
+];
+const SEC2 = [{ heading: "朝", from: 0, to: 1 }, { heading: "釣り", from: 2, to: 3 }];
+
+test("descriptionText: 大見出しがあれば【見出し】の行を、章の前に入れる(空行で区切る)", () => {
+  assert.equal(core.descriptionText(CH4, SEC2), "【朝】\n0:00 配信開始\n1:00 島内放送\n\n【釣り】\n2:00 釣り開始\n3:00 魚を売る");
+});
+
+test("descriptionText: 大見出しが無い・章の数と合わないときは、従来と同じ出力", () => {
+  const plain = "0:00 配信開始\n1:00 島内放送\n2:00 釣り開始\n3:00 魚を売る";
+  assert.equal(core.descriptionText(CH4), plain);
+  assert.equal(core.descriptionText(CH4, []), plain);
+  assert.equal(core.descriptionText(CH4, [{ heading: "朝", from: 0, to: 1 }, { heading: "釣り", from: 2, to: 5 }]), plain);
+  assert.equal(core.descriptionText(CH4, [{ heading: "朝", from: 0, to: 1 }, { heading: "釣り", from: 3, to: 3 }]), plain); // 穴
+});
+
+test("descriptionText: 大見出しがあっても、YouTube の規則(各 10 秒以上)は守る", () => {
+  const short = CH4.map((c, i) => (i === 1 ? { ...c, end: c.start + 5 } : c));
+  assert.equal(core.descriptionText(short, SEC2), null);
+});
+
+test("applySections: 章に見出しの番号を付ける。合わなければ捨てる", () => {
+  const ok = core.applySections(CH4, SEC2);
+  assert.deepEqual(ok.chapters.map((c) => c.section), [0, 0, 1, 1]);
+  assert.deepEqual(ok.sections, SEC2);
+  const bad = core.applySections(CH4, [{ heading: "朝", from: 0, to: 1 }, { heading: "釣り", from: 2, to: 9 }]);
+  assert.deepEqual(bad.chapters.map((c) => c.section), [null, null, null, null]);
+  assert.deepEqual(bad.sections, []);
+  assert.deepEqual(core.applySections(CH4, undefined).sections, []);
+  assert.deepEqual(core.applySections(CH4, [{ heading: "全部", from: 0, to: 3 }]).sections, []); // 1 区間は見出しにしない
+});
+
+test("applySections: 章の調整で章の数が変わったら、見出しは消える", () => {
+  const five = CH4.concat([{ start: 240, end: 300, title: "締め" }]);
+  assert.deepEqual(core.applySections(five, SEC2).sections, []);
+});
+
+test("applyGenerated: 開始時刻が 1 秒以内の章へ題名を当てる。空の題名は無視", () => {
+  const gen = [{ start: 60.5, title: "島内放送で空港のお知らせ" }, { start: 120, title: "" }, { start: 999, title: "どこにも当たらない" }];
+  const out = core.applyGenerated(CH4, gen);
+  assert.equal(out[1].title, "島内放送で空港のお知らせ");
+  assert.equal(out[1].title_by, "llm");
+  assert.equal(out[2].title, "釣り開始");
+  assert.equal(out[2].title_by, undefined);
+});
+
+test("applyGenerated の後に applyTitleOverrides をかけると、利用者の直しが勝つ", () => {
+  const gen = [{ start: 60, title: "島内放送で空港のお知らせ" }];
+  const out = core.applyTitleOverrides(core.applyGenerated(CH4, gen), [{ start: 60, title: "自分で直した題名" }]);
+  assert.equal(out[1].title, "自分で直した題名");
+  assert.equal(out[1].custom, true);
+});
+
+test("markdownText: 大見出しがあれば、見出しの行と、1 段下げた章の行", () => {
+  const md = core.markdownText(CH4, { videoUrl: "https://www.youtube.com/watch?v=abc", sections: SEC2 });
+  assert.match(md, /^## 【朝】$/m);
+  assert.match(md, /^### \[0:00\]\(https:\/\/www\.youtube\.com\/watch\?v=abc&t=0s\) 配信開始$/m);
+  assert.match(md, /^## 【釣り】$/m);
+  assert.doesNotMatch(core.markdownText(CH4, { videoUrl: "https://www.youtube.com/watch?v=abc" }), /【/);
+});
+
+test("chapterText: 章の区間 [start, end) の字幕だけを連結する。長いときは、先頭・中ほど・末尾から上限以内に", () => {
+  const cues = [{ start: 0, end: 5, text: "はじめ" }, { start: 10, end: 15, text: "中の話" }, { start: 20, end: 25, text: "次の章" }];
+  assert.equal(core.chapterText(cues, 10, 20), "中の話");
+  assert.equal(core.chapterText(cues, 0, 100), "はじめ 中の話 次の章");
+  assert.equal(core.chapterText(cues, 50, 60), "");
+  const long = [{ start: 0, end: 1, text: "A".repeat(9000) }, { start: 1, end: 2, text: "MIDDLE" }, { start: 2, end: 3, text: "B".repeat(9000) }];
+  const t = core.chapterText(long, 0, 10, 12000);
+  assert.ok(t.length <= 12000 && t.startsWith("A") && t.endsWith("B") && t.includes("MIDDLE"));
+});

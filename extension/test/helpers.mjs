@@ -21,6 +21,7 @@ export const Cap = require("../src/capture.js");
 export const Tr = require("../src/transcript.js");
 export const StoreMod = require("../src/store.js");
 export const EngineMod = require("../src/engine.js");
+export const TelopMod = require("../src/telop.js");
 
 /** chrome.storage.local と同じ形のメモリ上の保存先。 */
 export function memoryArea(initial = {}) {
@@ -68,10 +69,10 @@ export function loadBackground({ offscreenReply, storage = {}, fetchImpl, extens
  * engine: (method, path, body) => 応答({ok, status, data, ...})。background の中継の代わり。
  * 返り値: page.ui … 偽の UI(呼ばれた内容を記録)/ page.handlers … content.js が UI に渡した操作 / page.engineCalls …エンジン呼び出しの記録
  */
-export function loadContent({ pathname = "/watch", videoId = "vid1", duration = 600, granularity = "fine", storage = {}, engine, live = false, rows = null } = {}) {
+export function loadContent({ pathname = "/watch", videoId = "vid1", duration = 600, granularity = "fine", storage = {}, engine, live = false, rows = null, clipboard = null, telop = null, player = null } = {}) {
   const clock = { t: 1_000_000 };
   const video = Object.assign(new EventTarget(), { currentTime: 0, duration: live ? Infinity : duration, paused: false });
-  const ui = { calls: [], status: [], chapters: [], chapterOpts: [], digest: [], share: [], open: 0, tab: [], manual: [] };
+  const ui = { calls: [], status: [], chapters: [], chapterOpts: [], digest: [], share: [], open: 0, tab: [], manual: [], progress: [] };
   const captured = { handlers: null };
   const rec = (name) => (...a) => ui.calls.push([name, ...a]);
   const panel = {
@@ -81,13 +82,13 @@ export function loadContent({ pathname = "/watch", videoId = "vid1", duration = 
     setChapters: (c, _f, o) => { ui.chapters.push(clone(c)); ui.chapterOpts.push(clone(o || {})); },
     setManual: (m) => ui.manual.push(m), setTab: (n) => ui.tab.push(n),
     setDigest: (v) => ui.digest.push(clone(v)), setShare: (v) => ui.share.push(clone(v)),
-    setSearch: rec("search"), setSearchResults: rec("searchResults"), setEngine: rec("engine"), setAudioState: rec("audioState"), setVideoId: rec("videoId"),
+    setTitleProgress: (v) => ui.progress.push(clone(v)), setTelopMode: rec("telopMode"), setSearch: rec("search"), setSearchResults: rec("searchResults"), setEngine: rec("engine"), setAudioState: rec("audioState"), setVideoId: rec("videoId"),
   };
   const fakeUI = { createPanel: (_doc, _grans, handlers) => { captured.handlers = handlers; return panel; } };
   const ticks = [];
   const docListeners = {};
   const document = {
-    querySelector: (sel) => (sel.includes("video") ? video : sel === ".ytp-live" && live ? {} : null),
+    querySelector: (sel) => (sel === "#movie_player" ? player : sel.includes("video") ? video : sel === ".ytp-live" && live ? {} : null),
     querySelectorAll: () => [],
     addEventListener: (t, fn) => { docListeners[t] = fn; },
     documentElement: { hasAttribute: () => false }, body: {}, createElement: () => ({ append() {}, style: {}, remove() {} }),
@@ -111,10 +112,10 @@ export function loadContent({ pathname = "/watch", videoId = "vid1", duration = 
       },
     },
   };
-  const win = { ChapterLensCore: Core, ChapterLensCapture: Cap, ChapterLensTranscript: rows ? { loadTranscript: async () => rows } : Tr, ChapterLensUI: fakeUI, ChapterLensStore: StoreMod, ChapterLensEngine: EngineMod };
+  const win = { ChapterLensCore: Core, ChapterLensCapture: Cap, ChapterLensTranscript: rows ? { loadTranscript: async () => rows } : Tr, ChapterLensUI: fakeUI, ChapterLensStore: StoreMod, ChapterLensEngine: EngineMod, ChapterLensTelop: telop || TelopMod };
   const ctx = {
     window: win, document, location: loc, chrome, URL, performance, console, EventTarget,
-    Date: { now: () => clock.t }, setInterval: () => 1, clearInterval: () => {}, setTimeout, clearTimeout, Promise, navigator: {},
+    Date: { now: () => clock.t }, setInterval: () => 1, clearInterval: () => {}, setTimeout, clearTimeout, Promise, navigator: clipboard ? { clipboard: { writeText: async (t) => clipboard(t) } } : {},
     Math, Number, Set, Array, Object, isFinite, String, JSON, Map,
   };
   vm.runInNewContext(src("content.js"), ctx);

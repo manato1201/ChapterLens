@@ -187,6 +187,13 @@ class AccountStore:
             raise AccountError(f"share_mode が不正です: {mode!r}({'/'.join(SHARE_MODES)})")
         self.set_setting("share_mode", mode)
 
+    @property
+    def llm_enabled(self) -> bool:
+        return self.get_setting("llm_enabled", "0") == "1"
+
+    def set_llm_enabled(self, enabled: bool) -> None:
+        self.set_setting("llm_enabled", "1" if enabled else "0")
+
     def close(self) -> None:
         with self._lock:
             self.db.close()
