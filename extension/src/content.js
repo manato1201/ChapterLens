@@ -190,6 +190,7 @@
       // ページにフォーカスが無いと、writeText は解決も拒否もしないまま止まることがある。待ちすぎずに次の方法へ
       await Promise.race([navigator.clipboard.writeText(text), new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))]);
       say("概要欄用のテキストをコピーしました。");
+      if (state.ui.copied) state.ui.copied();
     } catch (_) {
       // クリップボードが使えない環境: 選択してコピーする
       const ta = document.createElement("textarea");
@@ -199,6 +200,7 @@
       try { ok = document.execCommand("copy"); } catch (_) { /* 失敗 */ }
       ta.remove();
       say(ok ? "概要欄用のテキストをコピーしました。" : "コピーできませんでした。", ok ? undefined : "error");
+      if (ok && state.ui.copied) state.ui.copied();
     }
   }
 
@@ -300,7 +302,8 @@
       if (made > 0 || sectionNote) await store.saveGenerated(id, state.generated, state.sections, state.sections.length ? state.sectionStarts : undefined); // 何も作れなかったときは、保存しない
       if (!failed) say(run.stop ? `途中で止めました(題名 ${made} 件)。ここまでを保存しました。` : `題名を ${made} 章に付けました${sectionNote}。`);
     } finally {
-      if (state.llm === run) { run.running = false; ui.setTitleProgress({ running: false }); render(); } // 章を、また直せるようにする
+      // 章を、また直せるようにする。result はボタンの完了の印(ok)・揺れ(error)に使う
+      if (state.llm === run) { run.running = false; ui.setTitleProgress({ running: false, result: failed ? "error" : run.stop ? "stopped" : "ok" }); render(); }
     }
   }
   const stopTitles = () => { state.llm.stop = true; };

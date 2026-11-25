@@ -97,7 +97,7 @@ const page = (
   window.mockNavigate = (v) => { history.pushState({}, '', '/watch?v=' + v); document.dispatchEvent(new Event('yt-navigate-finish')); };
 </script>
 ${variant === "shim" ? SHIM : ""}
-<script src="/src/core.js"></script><script src="/src/capture.js"></script><script src="/src/store.js"></script><script src="/src/engine.js"></script><script src="/src/transcript.js"></script><script src="/src/telop.js"></script><script src="/src/ui.js"></script><script src="/src/content.js"></script>
+<script src="/src/core.js"></script><script src="/src/capture.js"></script><script src="/src/store.js"></script><script src="/src/engine.js"></script><script src="/src/transcript.js"></script><script src="/src/telop.js"></script><script src="/src/motion.js"></script><script src="/src/ui.js"></script><script src="/src/content.js"></script>
 </body></html>`;
 
 createServer((req, res) => {

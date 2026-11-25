@@ -126,6 +126,30 @@
     .wrap.docked .view { max-height: 70vh; }
     .edit { opacity: 0; transition: opacity .12s; }
     li.row:hover .edit, li.row:focus-within .edit, li.current .edit { opacity: 1; }
+    /* ---- 状態変化(ばね。motion.js。2026-11-26): セグメントの下地・題名付けの読み込み → 完了・コピー ---- */
+    .gran.has-ind { position: relative; isolation: isolate; }
+    .gran.has-ind .seg { position: relative; background: none; }
+    .gran.has-ind .seg::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--chip); z-index: -1; }
+    .gran.has-ind .seg[aria-pressed="true"] { background: none; }
+    .seg-ind { position: absolute; left: 0; top: 0; border-radius: 14px; background: var(--accent); pointer-events: none; }
+    .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .secondary.is-busy { display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; overflow: hidden;
+      background: color-mix(in srgb, #2ba640 var(--cl-fill, 0%), transparent); }
+    .secondary.is-busy[disabled] { opacity: 1; }
+    .secondary.is-done { color: #fff; border-color: #2ba640; }
+    .cl-spin { flex: none; width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(from 0deg, transparent 0 20%, currentColor 100%);
+      -webkit-mask: radial-gradient(farthest-side, transparent 66%, #000 70%); mask: radial-gradient(farthest-side, transparent 66%, #000 70%);
+      transform: rotate(var(--cl-spin-angle, 0deg)) scale(var(--cl-spin-scale, 1)); }
+    .cl-check { flex: none; }
+    .cl-copy { display: inline-flex; align-items: center; justify-content: center; gap: 6px; overflow: hidden; }
+    .cl-ic { position: relative; width: 16px; height: 16px; flex: none; }
+    .cl-ic svg { position: absolute; inset: 0; }
+    .cl-ok { color: #2ba640; opacity: 0; }
+    .cl-roll { display: inline-block; height: 1.5em; line-height: 1.5em; overflow: hidden; text-align: left; }
+    .cl-col { display: flex; flex-direction: column; }
+    .cl-col b { font-weight: inherit; white-space: nowrap; height: 1.5em; align-self: flex-start; }
+    .cl-col .cl-done { color: #2ba640; }
+    .wrap.dark .cl-ok, .wrap.dark .cl-col .cl-done { color: #81c995; }
     /* ---- ちいさな遊び: 触れたとき・現れたときの「1 回きり」の動きだけ(無限には動かさない)。動かすのは transform と opacity ---- */
     @media (prefers-reduced-motion: no-preference) {
       /* 章が見つかると、上から順に、ふわっと現れる(最初の 8 つまで。残りは待たせない) */
@@ -147,6 +171,8 @@
       [role="tabpanel"] { animation: cl-rise .2s cubic-bezier(.16,1,.3,1) both; }
       /* 失敗の表示は、横に小さく震えて、気づかせる(1 回) */
       .status.error { animation: cl-shake .32s cubic-bezier(.4,0,.2,1); }
+      /* セグメント: 下地が滑ったあと、文字の色が追いつく */
+      .gran.has-ind .seg { transition: transform .12s cubic-bezier(.4,0,.2,1), color .25s ease; }
     }
     @keyframes cl-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @keyframes cl-hop { 0% { transform: none; } 40% { transform: translateY(-2px) scale(1.06); } 100% { transform: none; } }
@@ -231,6 +257,17 @@
       telopButtons.set(mode, b);
       telopSeg.append(b);
     }
+    // 状態変化の動き(motion.js があれば。テスト・古い環境では無し = 動かさずに切り替えるだけ)
+    const motion = (() => {
+      const M = typeof self !== "undefined" ? self.ChapterLensMotion : null;
+      const win = doc.defaultView;
+      return M && win ? M.create(win) : null;
+    })();
+    const granSeg = motion ? motion.segmented(gran, doc) : null;
+    const telopSegMotion = motion ? motion.segmented(telopSeg, doc) : null;
+    const titlesBusy = motion ? motion.busy(titlesBtn, doc) : null;
+    if (titlesBusy) titleProg.classList.add("sr"); // 進み具合はボタンの中に出す(読み上げ用には残す)
+    const copyFx = motion ? motion.copyRoll(copyBtn, doc, "概要欄用にコピー", "コピーしました") : null;
     const note = h(doc, "div", { class: "note", text: "字幕の言葉の変化から自動で作ります。位置は数秒ずれることがあります。−5 / +5 / × で直せます(この PC のブラウザにだけ保存)。" });
     const chaptersView = h(doc, "section", { class: "view", role: "tabpanel", "aria-label": "目次" }, [
       engineRow, gran, telopSeg, status, runBtn, titlesRow, audioBtn, searchRow, results, list, exportRow, note, h(doc, "div", { class: "bar" }, [addBtn, resetBtn, copyBtn]), // 操作は、いつも下に見えている(スクロールしなくてよい)
@@ -389,10 +426,12 @@
       },
       setBusy(busy) { runBtn.disabled = busy; for (const b of segButtons.values()) b.disabled = busy; },
       setRunLabel(text) { runBtn.textContent = text; },
-      setGranularity(key) { for (const [k, b] of segButtons) b.setAttribute("aria-pressed", String(k === key)); },
+      setGranularity(key) { for (const [k, b] of segButtons) b.setAttribute("aria-pressed", String(k === key)); if (granSeg) granSeg.update(); },
       setCanCopy(ok) { copyBtn.disabled = !ok; },
+      /** コピーできた: ボタンが「コピーしました」に変わり、1.8 秒で戻る(motion.js が無いときは何もしない。文は状態の行に出る)。 */
+      copied() { if (copyFx) copyFx.copied(); },
       /** テロップの出し方(change / always / off)の選択を表示する。知らない値は無視。 */
-      setTelopMode(mode) { if (!telopButtons.has(mode)) return; for (const [k, b] of telopButtons) b.setAttribute("aria-pressed", String(k === mode)); },
+      setTelopMode(mode) { if (!telopButtons.has(mode)) return; for (const [k, b] of telopButtons) b.setAttribute("aria-pressed", String(k === mode)); if (telopSegMotion) telopSegMotion.update(); },
       /** opts: { editable: 章を直せるか, tentative: 暫定の章の番号の配列 } */
       setChapters(chapters, formatTime, opts) {
         // 題名を直している最中(入力欄がある)は、一覧を作り直さない(題名付けの途中の更新で、入力が消えるため)。確定・取り消しのあとに再描画される
@@ -432,11 +471,21 @@
         });
         addBtn.disabled = !o.editable;
       },
-      /** v: { running, done, total }。実行中は進み具合と「止める」を出し、開始ボタンを押せなくする。 */
+      /** v: { running, done, total, result }。実行中は進み具合と「止める」を出し、開始ボタンを押せなくする。
+       *  result(終わったとき): "ok" = 完了の印 / "error" = 揺れる / それ以外 = 元に戻すだけ(motion.js があるとき)。 */
       setTitleProgress(v) {
         const s = v || {};
+        const was = titlesRunning;
         titlesRunning = !!s.running;
         titleProg.textContent = titlesRunning ? `${s.done || 0} / ${s.total || 0} 章` : "";
+        if (titlesBusy) {
+          const label = `題名を付けています ${s.done || 0} / ${s.total || 0} 章`;
+          if (titlesRunning && !was) titlesBusy.loading(label);
+          else if (titlesRunning) titlesBusy.text(label);
+          else if (was && s.result === "ok") titlesBusy.success("題名を付けました");
+          else if (was && s.result === "error") titlesBusy.fail();
+          else if (was) titlesBusy.reset();
+        }
         stopBtn.hidden = !titlesRunning;
         syncTitlesBtn();
       },

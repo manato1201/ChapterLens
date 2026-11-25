@@ -95,6 +95,7 @@ YouTube の動画ページに、**話題の切り替えから作った目次(チ
 | `src/content.js`    | 全体の制御。動画の切り替え(SPA)で前の結果を捨てる。音声の取り込みの結果を、動画の時刻に直して積む                                                    |
 | `src/capture.js`    | 音声の取り込みの、ブラウザ API に触れない部分(16kHz へ・30 秒の区切り・WAV・時計↔再生位置・エンジンへの送信と失敗の扱い)。Node でテストできる            |
 | `src/offscreen.js` `src/pcm-worklet.js` | タブの音を受け取り(AudioWorklet)、capture.js へ渡す。薄い配線だけ                                                                  |
+| `src/motion.js` | **状態変化の動き(ばね・2026-11-26)**: 目次の細かさ・テロップの選択の下地が滑る・「題名を付ける」の読み込み → 完了(✓)・「概要欄用にコピー」の ✓ と文字の転がり。値は designbookmark.com の Motion 部品と同じ(元のコードはライセンスの記載が無いので使わず、ばねの値と動きの決まりだけ合わせて書き直した)。動きを減らす設定では、すぐ切り替わる。無くても ui.js は動く |
 | `src/telop.js` | **テロップ**: いつ出すか(章が変わったときだけ・0.5 秒まとめる)・描画(プレイヤーの中に 1 要素。textContent だけ)。DOM に依存しない部分は Node でテスト |
 | `src/background.js` | offscreen の作成・結果のタブへの中継・**エンジンの API の中継**(許可リスト・送り先の検査)                                                            |
 | `src/popup.html` `src/popup.js` | アイコンを押したときの画面。開始・停止・エンジンの URL と token                                                                           |
@@ -102,7 +103,7 @@ YouTube の動画ページに、**話題の切り替えから作った目次(チ
 ## テスト
 
 ```bash
-npm test                          # 212 件(Node の標準機能だけ。依存なし)
+npm test                          # 218 件(Node の標準機能だけ。依存なし)
 node tools/parity_real.mjs        # 実データ(ローカル)で Python 版と一致するか。先に engine で export_golden.py real
 node tools/mock_server.mjs        # YouTube に似せたモックを http://localhost:8765/watch?v=mock で配信(画面の確認用)
 node tools/e2e_audio.mjs <wav> <json> --url http://127.0.0.1:<port> --token <token> --origin chrome-extension://<ID>
@@ -123,6 +124,7 @@ node tools/e2e_audio.mjs <wav> <json> --url http://127.0.0.1:<port> --token <tok
 | 実エンジンに通した、音声の取り込み(token・Origin・言語の自動判定・時刻変換・検出)       | `tools/e2e_audio.mjs`: 合成音声(英語)で、1 倍速で最大 7.3 秒・2 倍速かつ 600 秒から見始めで最大 14.5 秒のずれ |
 | 題名・大見出し・テロップの画面(模擬の返事を返すモックで、題名が順に書き換わる・大見出しが出る・プレイヤーの右上に白地黒の太字で出る・クリックを通す) | Chrome で、`tools/mock_server.mjs` のモック(2026-11-23。**本物の YouTube・本物の LocalLLMHarness では未確認**) |
 | 3 つのタブ・章の調整・ダイジェストの区間と一致率・共有の一覧と重ね表示・管理ページ     | Chrome で、モックページ(擬似の chrome API つき。`tools/mock_server.mjs` の `?variant=shim` と `/admin`)に読み込んで、画面と操作を確認 |
+| 状態変化の動き(セグメントの下地が行き過ぎてから止まる・題名付けの「進み具合 → 題名を付けました → 元へ」・コピーの ✓ と幅の縮みと 1.8 秒後の戻り) | Chrome で、`tools/mock_server.mjs` の `?variant=shim`(2026-11-26。コピーは実際のクリック) |
 | 章の調整・ダイジェスト・共有・ライブ・エンジン中継の流れ                               | 偽の chrome / DOM / エンジンでの動作テスト(`test/features.test.mjs` ほか)                  |
 | ダイジェストの JavaScript 版                                                           | 合成 10 通り+実データ 39 本で、Python 版と区間が完全に一致                                |
 | **拡張として Chrome に読み込んでの動作**(`tabCapture`・offscreen・popup・本物の音)     | **未確認**(Chrome API は Node で再現できない。利用者が上の「入れ方」「音声から作る」で確かめてほしい) |

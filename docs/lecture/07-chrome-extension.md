@@ -104,7 +104,7 @@ print("読み込む順   :", [Path(f).name for f in m["content_scripts"][0]["js"
 権限         : ['activeTab', 'offscreen', 'storage', 'tabCapture']
 通信できる先 : ['http://127.0.0.1/*']
 読み込む対象 : [['https://www.youtube.com/*']]
-読み込む順   : ['core.js', 'capture.js', 'store.js', 'engine.js', 'transcript.js', 'telop.js', 'ui.js', 'content.js']
+読み込む順   : ['core.js', 'capture.js', 'store.js', 'engine.js', 'transcript.js', 'telop.js', 'motion.js', 'ui.js', 'content.js']
 ```
 
 読み込む順が大切です。`content.js` は `core.js`・`store.js` などに**依存**するので、最後に読み込みます(テストが順序を確かめます)。
